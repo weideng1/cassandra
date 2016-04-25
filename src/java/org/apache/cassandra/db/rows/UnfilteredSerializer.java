@@ -76,7 +76,11 @@ import org.apache.cassandra.io.util.DataOutputPlus;
  *       and if it's expiring a delta-encoded int &lt;ttl&gt; (unless it's an expiring cell
  *       and the ttl and localDeletionTime are indicated by the flags to be the same
  *       than the row ones, in which case none of those appears).
+<<<<<<< HEAD
  *
+=======
+ * 
+>>>>>>> 204f19a... corrected javadoc for o.a.c.db.rows.UnfilteredSerializer, CASSANDRA-11640
  */
 public class UnfilteredSerializer
 {
