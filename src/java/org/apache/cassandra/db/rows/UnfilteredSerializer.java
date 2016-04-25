@@ -29,45 +29,54 @@ import org.apache.cassandra.io.util.DataOutputPlus;
 /**
  * Serialize/deserialize a single Unfiltered (both on-wire and on-disk).
  *
- * {@code
- * The encoded format for an unfiltered is <flags>(<row>|<marker>) where:
  *
- *   <flags> is a byte (or two) whose bits are flags used by the rest of the serialization. Each
+ * The encoded format for an unfiltered is &lt;flags&gt;(&lt;row&gt;|&lt;marker&gt;) where:
+ *   <p>
+ *   &lt;flags&gt; is a byte (or two) whose bits are flags used by the rest of the serialization. Each
  *       flag is defined/explained below as the "Unfiltered flags" constants. One of those flags
  *       is an extension flag, and if present, trigger the rid of another byte that contains more
  *       flags. If the extension is not set, defaults are assumed for the flags of that 2nd byte.
- *   <row> is <clustering><size>[<timestamp>][<ttl>][<deletion>]<sc1>...<sci><cc1>...<ccj> where
- *       <clustering> is the row clustering as serialized by {@code Clustering.serializer} (note
+ *   <p>
+ *   &lt;row&gt; is &lt;clustering&gt;&lt;size&gt;[&lt;timestamp&gt;][&lt;ttl&gt;][&lt;deletion&gt;]&lt;sc1&gt;...&lt;sci&gt;&lt;cc1&gt;...&lt;ccj&gt; where
+ *       &lt;clustering&gt; is the row clustering as serialized by {@code Clustering.serializer} (note
  *       that static row are an exception and don't have this).
- *       <size> is the size of the whole unfiltered on disk (it's only used for sstables and is
+ *   <p>
+ *   <blockquote>
+ *       &lt;size&gt; is the size of the whole unfiltered on disk (it's only used for sstables and is
  *       used to efficiently skip rows).
- *       <timestamp>, <ttl> and <deletion> are the row timestamp, ttl and deletion
- *       whose presence is determined by the flags. <sci> is the simple columns of the row and <ccj> the
+ *   <p>
+ *       &lt;timestamp&gt;, &lt;ttl&gt; and &lt;deletion&gt; are the row timestamp, ttl and deletion
+ *       whose presence is determined by the flags. &lt;sci&gt; is the simple columns of the row and &lt;ccj&gt; the
  *       complex ones.
+ *   <p>
  *       The columns for the row are then serialized if they differ from those in the header,
  *       and each cell then follows:
- *         * Each simple column <sci> will simply be a <cell>
+ *       <ul>
+ *         <li> Each simple column &lt;sci&gt; will simply be a &lt;cell&gt;
  *           (which might have no value, see below),
- *         * Each <ccj> will be [<delTime>]<n><cell1>...<celln> where <delTime>
- *           is the deletion for this complex column (if flags indicates it present), <n>
- *           is the vint encoded value of n, i.e. <celln>'s 1-based index, <celli>
- *           are the <cell> for this complex column
- *   <marker> is <bound><deletion> where <bound> is the marker bound as serialized
- *       by {@code ClusteringBoundOrBoundary.serializer} and <deletion> is the marker deletion
+ *         <li> Each &lt;ccj&gt; will be [&lt;delTime&gt;]&lt;n&gt;&lt;cell1&gt;...&lt;celln&gt; where &lt;delTime&gt;
+ *           is the deletion for this complex column (if flags indicates it present), &lt;n&gt;
+ *           is the vint encoded value of n, i.e. &lt;celln&gt;'s 1-based index, &lt;celli&gt;
+ *           are the &lt;cell&gt; for this complex column
+ *       </ul>
+ *    </blockquote>
+ *    <p>
+ *   &lt;marker&gt; is &lt;bound&gt;&lt;deletion&gt; where &lt;bound&gt; is the marker bound as serialized
+ *       by {@code Slice.Bound.serializer} and &lt;deletion&gt; is the marker deletion
  *       time.
- *
- *   <cell> A cell start with a 1 byte <flag>. The 2nd and third flag bits indicate if
+ *    <p>
+ *   &lt;cell&gt; A cell start with a 1 byte &lt;flag&gt;. The 2nd and third flag bits indicate if
  *       it's a deleted or expiring cell. The 4th flag indicates if the value
  *       is empty or not. The 5th and 6th indicates if the timestamp and ttl/
  *       localDeletionTime for the cell are the same than the row one (if that
- *       is the case, those are not repeated for the cell).Follows the <value>
- *       (unless it's marked empty in the flag) and a delta-encoded long <timestamp>
+ *       is the case, those are not repeated for the cell).Follows the &lt;value&gt;
+ *       (unless it's marked empty in the flag) and a delta-encoded long &lt;timestamp&gt;
  *       (unless the flag tells to use the row level one).
- *       Then if it's a deleted or expiring cell a delta-encoded int <localDelTime>
- *       and if it's expiring a delta-encoded int <ttl> (unless it's an expiring cell
+ *       Then if it's a deleted or expiring cell a delta-encoded int &lt;localDelTime&gt;
+ *       and if it's expiring a delta-encoded int &lt;ttl&gt; (unless it's an expiring cell
  *       and the ttl and localDeletionTime are indicated by the flags to be the same
  *       than the row ones, in which case none of those appears).
- * }
+ *
  */
 public class UnfilteredSerializer
 {
