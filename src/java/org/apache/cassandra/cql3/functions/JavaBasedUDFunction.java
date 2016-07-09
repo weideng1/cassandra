@@ -294,7 +294,7 @@ public final class JavaBasedUDFunction extends UDFunction
             }
 
             // Verify the UDF bytecode against use of probably dangerous code
-            Set<String> errors = udfByteCodeVerifier.verify(targetClassLoader.classData(targetClassName));
+            Set<String> errors = udfByteCodeVerifier.verify(targetClassName, targetClassLoader.classData(targetClassName));
             String validDeclare = "not allowed method declared: " + executeInternalName + '(';
             for (Iterator<String> i = errors.iterator(); i.hasNext();)
             {
@@ -343,12 +343,13 @@ public final class JavaBasedUDFunction extends UDFunction
             // in case of an ITE, use the cause
             throw new InvalidRequestException(String.format("Could not compile function '%s' from Java source: %s", name, e.getCause()));
         }
-        catch (VirtualMachineError e)
+        catch (InvalidRequestException | VirtualMachineError e)
         {
             throw e;
         }
         catch (Throwable e)
         {
+            logger.error(String.format("Could not compile function '%s' from Java source:%n%s", name, javaSource), e);
             throw new InvalidRequestException(String.format("Could not compile function '%s' from Java source: %s", name, e));
         }
     }

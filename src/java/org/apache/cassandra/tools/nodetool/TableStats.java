@@ -95,7 +95,7 @@ public class TableStats extends NodeToolCmd
         filter.verifyTables();
 
         // get metrics of keyspace
-        StatsHolder holder = new StatsHolder();
+        StatsHolder holder = new StatsHolder(probe.getNumberOfTables());
         for (Map.Entry<String, Collection<ColumnFamilyStoreMBean>> entry : selectedTableMbeans.asMap().entrySet())
         {
             String keyspaceName = entry.getKey();
@@ -131,6 +131,7 @@ public class TableStats extends NodeToolCmd
                 Long indexSummaryOffHeapSize = null;
                 Long compressionMetadataOffHeapSize = null;
                 Long offHeapSize = null;
+                Double percentRepaired = null;
 
                 try
                 {
@@ -139,6 +140,7 @@ public class TableStats extends NodeToolCmd
                     indexSummaryOffHeapSize = (Long) probe.getColumnFamilyMetric(keyspaceName, tableName, "IndexSummaryOffHeapMemoryUsed");
                     compressionMetadataOffHeapSize = (Long) probe.getColumnFamilyMetric(keyspaceName, tableName, "CompressionMetadataOffHeapMemoryUsed");
                     offHeapSize = memtableOffHeapSize + bloomFilterOffHeapSize + indexSummaryOffHeapSize + compressionMetadataOffHeapSize;
+                    percentRepaired = (Double) probe.getColumnFamilyMetric(keyspaceName, tableName, "PercentRepaired");
                 }
                 catch (RuntimeException e)
                 {
@@ -156,8 +158,18 @@ public class TableStats extends NodeToolCmd
                     statsTable.offHeapMemoryUsedTotal = format(offHeapSize, humanReadable);
 
                 }
+                if (percentRepaired != null)
+                {
+                    statsTable.percentRepaired = Math.round(100 * percentRepaired) / 100.0;
+                }
                 statsTable.sstableCompressionRatio = probe.getColumnFamilyMetric(keyspaceName, tableName, "CompressionRatio");
-                statsTable.numberOfKeysEstimate = probe.getColumnFamilyMetric(keyspaceName, tableName, "EstimatedPartitionCount");
+                Object estimatedPartitionCount = probe.getColumnFamilyMetric(keyspaceName, tableName, "EstimatedPartitionCount");
+                if (Long.valueOf(-1L).equals(estimatedPartitionCount))
+                {
+                    estimatedPartitionCount = 0L;
+                }
+                statsTable.numberOfKeysEstimate = estimatedPartitionCount;
+
                 statsTable.memtableCellCount = probe.getColumnFamilyMetric(keyspaceName, tableName, "MemtableColumnsCount");
                 statsTable.memtableDataSize = format((Long) probe.getColumnFamilyMetric(keyspaceName, tableName, "MemtableLiveDataSize"), humanReadable);
                 if (memtableOffHeapSize != null)

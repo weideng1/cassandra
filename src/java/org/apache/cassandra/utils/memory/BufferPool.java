@@ -21,23 +21,23 @@ package org.apache.cassandra.utils.memory;
 import java.lang.ref.PhantomReference;
 import java.lang.ref.ReferenceQueue;
 import java.nio.ByteBuffer;
-import java.util.*;
+import java.util.Queue;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicLongFieldUpdater;
-
-import org.apache.cassandra.concurrent.NamedThreadFactory;
-import org.apache.cassandra.io.compress.BufferType;
-import org.apache.cassandra.io.util.FileUtils;
-import org.apache.cassandra.utils.FBUtilities;
-import org.apache.cassandra.utils.NoSpamLogger;
 
 import com.google.common.annotations.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import io.netty.util.concurrent.FastThreadLocal;
+import org.apache.cassandra.concurrent.NamedThreadFactory;
 import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.io.compress.BufferType;
+import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.metrics.BufferPoolMetrics;
+import org.apache.cassandra.utils.FBUtilities;
+import org.apache.cassandra.utils.NoSpamLogger;
 import org.apache.cassandra.utils.concurrent.Ref;
 
 /**
@@ -68,7 +68,7 @@ public class BufferPool
     private static final GlobalPool globalPool = new GlobalPool();
 
     /** A thread local pool of chunks, where chunks come from the global pool */
-    private static final ThreadLocal<LocalPool> localPool = new ThreadLocal<LocalPool>() {
+    private static final FastThreadLocal<LocalPool> localPool = new FastThreadLocal<LocalPool>() {
         @Override
         protected LocalPool initialValue()
         {
@@ -226,7 +226,7 @@ public class BufferPool
             if (DISABLED)
                 logger.info("Global buffer pool is disabled, allocating {}", ALLOCATE_ON_HEAP_WHEN_EXAHUSTED ? "on heap" : "off heap");
             else
-                logger.info("Global buffer pool is enabled, when pool is exahusted (max is {}) it will allocate {}",
+                logger.info("Global buffer pool is enabled, when pool is exhausted (max is {}) it will allocate {}",
                             FBUtilities.prettyPrintMemory(MEMORY_USAGE_THRESHOLD),
                             ALLOCATE_ON_HEAP_WHEN_EXAHUSTED ? "on heap" : "off heap");
         }
@@ -273,7 +273,22 @@ public class BufferPool
             }
 
             // allocate a large chunk
-            Chunk chunk = new Chunk(allocateDirectAligned(MACRO_CHUNK_SIZE));
+            Chunk chunk;
+            try
+            {
+                chunk = new Chunk(allocateDirectAligned(MACRO_CHUNK_SIZE));
+            }
+            catch (OutOfMemoryError oom)
+            {
+                noSpamLogger.error("Buffer pool failed to allocate chunk of {}, current size {} ({}). " +
+                                   "Attempting to continue; buffers will be allocated in on-heap memory which can degrade performance. " +
+                                   "Make sure direct memory size (-XX:MaxDirectMemorySize) is large enough to accommodate off-heap memtables and caches.",
+                                   FBUtilities.prettyPrintMemory(MACRO_CHUNK_SIZE),
+                                   FBUtilities.prettyPrintMemory(sizeInBytes()),
+                                   oom.toString());
+                return false;
+            }
+
             chunk.acquire(null);
             macroChunks.add(chunk);
             for (int i = 0 ; i < MACRO_CHUNK_SIZE ; i += CHUNK_SIZE)

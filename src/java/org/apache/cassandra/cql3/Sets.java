@@ -23,8 +23,6 @@ import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.stream.Collectors;
 
-import com.google.common.base.Joiner;
-
 import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.functions.Function;
 import org.apache.cassandra.db.DecoratedKey;
@@ -124,6 +122,18 @@ public abstract class Sets
             return AssignmentTestable.TestResult.testAll(keyspace, valueSpec, elements);
         }
 
+        @Override
+        public AbstractType<?> getExactTypeIfKnown(String keyspace)
+        {
+            for (Term.Raw term : elements)
+            {
+                AbstractType<?> type = term.getExactTypeIfKnown(keyspace);
+                if (type != null)
+                    return SetType.getInstance(type, false);
+            }
+            return null;
+        }
+
         public String getText()
         {
             return elements.stream().map(Term.Raw::getText).collect(Collectors.joining(", ", "{", "}"));
@@ -217,9 +227,9 @@ public abstract class Sets
             return new Value(buffers);
         }
 
-        public Iterable<Function> getFunctions()
+        public void addFunctionsTo(List<Function> functions)
         {
-            return Terms.getFunctions(elements);
+            Terms.addFunctions(elements, functions);
         }
     }
 

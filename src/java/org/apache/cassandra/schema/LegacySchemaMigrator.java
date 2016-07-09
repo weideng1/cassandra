@@ -28,6 +28,7 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.config.*;
 import org.apache.cassandra.cql3.ColumnIdentifier;
+import org.apache.cassandra.cql3.FieldIdentifier;
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.cql3.functions.FunctionName;
@@ -662,7 +663,9 @@ public final class LegacySchemaMigrator
                                                               boolean isStaticCompactTable,
                                                               boolean needsUpgrade)
     {
-        ColumnDefinition.Kind kind = deserializeKind(row.getString("type"));
+        String rawKind = row.getString("type");
+
+        ColumnDefinition.Kind kind = deserializeKind(rawKind);
         if (needsUpgrade && isStaticCompactTable && kind == ColumnDefinition.Kind.REGULAR)
             kind = ColumnDefinition.Kind.STATIC;
 
@@ -678,15 +681,18 @@ public final class LegacySchemaMigrator
         // we need to use the comparator fromString method
         AbstractType<?> comparator = isCQLTable
                                      ? UTF8Type.instance
-                                     : CompactTables.columnDefinitionComparator(kind, isSuper, rawComparator, rawSubComparator);
+                                     : CompactTables.columnDefinitionComparator(rawKind, isSuper, rawComparator, rawSubComparator);
         ColumnIdentifier name = ColumnIdentifier.getInterned(comparator.fromString(row.getString("column_name")), comparator);
 
         AbstractType<?> validator = parseType(row.getString("validator"));
 
         // In the 2.x schema we didn't store UDT's with a FrozenType wrapper because they were implicitly frozen.  After
-        // CASSANDRA-7423 (non-frozen UDTs), this is no longer true, so we need to freeze nested UDTs to properly
-        // migrate the schema.  See CASSANDRA-11609.
-        validator = validator.freezeNestedUDTs();
+        // CASSANDRA-7423 (non-frozen UDTs), this is no longer true, so we need to freeze UDTs and nested freezable
+        // types (UDTs and collections) to properly migrate the schema.  See CASSANDRA-11609 and CASSANDRA-11613.
+        if (validator.isUDT() && validator.isMultiCell())
+            validator = validator.freeze();
+        else
+            validator = validator.freezeNestedMulticellTypes();
 
         return new ColumnDefinition(keyspace, table, name, validator, componentIndex, kind);
     }
@@ -806,8 +812,8 @@ public final class LegacySchemaMigrator
         DecoratedKey key = store.metadata.decorateKey(AsciiType.instance.fromString(keyspaceName));
         SinglePartitionReadCommand command = SinglePartitionReadCommand.create(store.metadata, nowInSec, key, slices);
 
-        try (OpOrder.Group op = store.readOrdering.start();
-             RowIterator partition = UnfilteredRowIterators.filter(command.queryMemtableAndDisk(store, op), nowInSec))
+        try (ReadExecutionController controller = command.executionController();
+             RowIterator partition = UnfilteredRowIterators.filter(command.queryMemtableAndDisk(store, controller), nowInSec))
         {
             return partition.next().primaryKeyLivenessInfo().timestamp();
         }
@@ -820,10 +826,10 @@ public final class LegacySchemaMigrator
                               SystemKeyspace.LEGACY_USERTYPES);
         UntypedResultSet.Row row = query(query, keyspaceName, typeName).one();
 
-        List<ByteBuffer> names =
+        List<FieldIdentifier> names =
             row.getList("field_names", UTF8Type.instance)
                .stream()
-               .map(ByteBufferUtil::bytes)
+               .map(t -> FieldIdentifier.forInternalString(t))
                .collect(Collectors.toList());
 
         List<AbstractType<?>> types =

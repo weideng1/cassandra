@@ -24,11 +24,12 @@ import java.util.List;
 import java.util.Map;
 
 import com.google.common.collect.Maps;
+import com.google.common.collect.Ordering;
 
 import com.clearspring.analytics.stream.cardinality.HyperLogLogPlus;
 import com.clearspring.analytics.stream.cardinality.ICardinality;
 import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.commitlog.ReplayPosition;
+import org.apache.cassandra.db.commitlog.CommitLogPosition;
 import org.apache.cassandra.db.marshal.AbstractType;
 import org.apache.cassandra.db.partitions.PartitionStatisticsCollector;
 import org.apache.cassandra.db.rows.Cell;
@@ -65,7 +66,8 @@ public class MetadataCollector implements PartitionStatisticsCollector
     {
         return new StatsMetadata(defaultPartitionSizeHistogram(),
                                  defaultCellPerPartitionCountHistogram(),
-                                 ReplayPosition.NONE,
+                                 CommitLogPosition.NONE,
+                                 CommitLogPosition.NONE,
                                  Long.MIN_VALUE,
                                  Long.MAX_VALUE,
                                  Integer.MAX_VALUE,
@@ -86,7 +88,8 @@ public class MetadataCollector implements PartitionStatisticsCollector
     protected EstimatedHistogram estimatedPartitionSize = defaultPartitionSizeHistogram();
     // TODO: cound the number of row per partition (either with the number of cells, or instead)
     protected EstimatedHistogram estimatedCellPerPartitionCount = defaultCellPerPartitionCountHistogram();
-    protected ReplayPosition replayPosition = ReplayPosition.NONE;
+    protected CommitLogPosition commitLogLowerBound = CommitLogPosition.NONE;
+    protected CommitLogPosition commitLogUpperBound = CommitLogPosition.NONE;
     protected final MinMaxLongTracker timestampTracker = new MinMaxLongTracker();
     protected final MinMaxIntTracker localDeletionTimeTracker = new MinMaxIntTracker(Cell.NO_DELETION_TIME, Cell.NO_DELETION_TIME);
     protected final MinMaxIntTracker ttlTracker = new MinMaxIntTracker(Cell.NO_TTL, Cell.NO_TTL);
@@ -120,7 +123,23 @@ public class MetadataCollector implements PartitionStatisticsCollector
     {
         this(comparator);
 
-        replayPosition(ReplayPosition.getReplayPosition(sstables));
+        CommitLogPosition min = null, max = null;
+        for (SSTableReader sstable : sstables)
+        {
+            if (min == null)
+            {
+                min = sstable.getSSTableMetadata().commitLogLowerBound;
+                max = sstable.getSSTableMetadata().commitLogUpperBound;
+            }
+            else
+            {
+                min = Ordering.natural().min(min, sstable.getSSTableMetadata().commitLogLowerBound);
+                max = Ordering.natural().max(max, sstable.getSSTableMetadata().commitLogUpperBound);
+            }
+        }
+
+        commitLogLowerBound(min);
+        commitLogUpperBound(max);
         sstableLevel(level);
     }
 
@@ -207,9 +226,15 @@ public class MetadataCollector implements PartitionStatisticsCollector
         ttlTracker.update(newTTL);
     }
 
-    public MetadataCollector replayPosition(ReplayPosition replayPosition)
+    public MetadataCollector commitLogLowerBound(CommitLogPosition commitLogLowerBound)
     {
-        this.replayPosition = replayPosition;
+        this.commitLogLowerBound = commitLogLowerBound;
+        return this;
+    }
+
+    public MetadataCollector commitLogUpperBound(CommitLogPosition commitLogUpperBound)
+    {
+        this.commitLogUpperBound = commitLogUpperBound;
         return this;
     }
 
@@ -274,7 +299,8 @@ public class MetadataCollector implements PartitionStatisticsCollector
         components.put(MetadataType.VALIDATION, new ValidationMetadata(partitioner, bloomFilterFPChance));
         components.put(MetadataType.STATS, new StatsMetadata(estimatedPartitionSize,
                                                              estimatedCellPerPartitionCount,
-                                                             replayPosition,
+                                                             commitLogLowerBound,
+                                                             commitLogUpperBound,
                                                              timestampTracker.min(),
                                                              timestampTracker.max(),
                                                              localDeletionTimeTracker.min(),

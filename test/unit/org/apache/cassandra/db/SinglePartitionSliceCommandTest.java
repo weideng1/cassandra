@@ -1,3 +1,23 @@
+/*
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ */
 package org.apache.cassandra.db;
 
 import java.io.IOException;
@@ -110,16 +130,22 @@ public class SinglePartitionSliceCommandTest
         cmd = ReadCommand.legacyReadCommandSerializer.deserialize(in, MessagingService.VERSION_21);
 
         logger.debug("ReadCommand: {}", cmd);
-        UnfilteredPartitionIterator partitionIterator = cmd.executeLocally(ReadExecutionController.empty());
-        ReadResponse response = ReadResponse.createDataResponse(partitionIterator, cmd);
+        try (ReadExecutionController controller = cmd.executionController();
+             UnfilteredPartitionIterator partitionIterator = cmd.executeLocally(controller))
+        {
+            ReadResponse response = ReadResponse.createDataResponse(partitionIterator, cmd);
 
-        logger.debug("creating response: {}", response);
-        partitionIterator = response.makeIterator(cmd);
-        assert partitionIterator.hasNext();
-        UnfilteredRowIterator partition = partitionIterator.next();
-
-        LegacyLayout.LegacyUnfilteredPartition rowIter = LegacyLayout.fromUnfilteredRowIterator(cmd, partition);
-        Assert.assertEquals(Collections.emptyList(), rowIter.cells);
+            logger.debug("creating response: {}", response);
+            try (UnfilteredPartitionIterator pIter = response.makeIterator(cmd))
+            {
+                assert pIter.hasNext();
+                try (UnfilteredRowIterator partition = pIter.next())
+                {
+                    LegacyLayout.LegacyUnfilteredPartition rowIter = LegacyLayout.fromUnfilteredRowIterator(cmd, partition);
+                    Assert.assertEquals(Collections.emptyList(), rowIter.cells);
+                }
+            }
+        }
     }
 
     private void checkForS(UnfilteredPartitionIterator pi)

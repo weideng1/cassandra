@@ -346,7 +346,7 @@ Table creation supports the following other @<property>@:
 
 h4(#compactionOptions). Compaction options
 
-The @compaction@ property must at least define the @'class'@ sub-option, that defines the compaction strategy class to use. The default supported class are @'SizeTieredCompactionStrategy'@, @'LeveledCompactionStrategy'@ and @'DateTieredCompactionStrategy'@. Custom strategy can be provided by specifying the full class name as a "string constant":#constants. The rest of the sub-options depends on the chosen class. The sub-options supported by the default classes are:
+The @compaction@ property must at least define the @'class'@ sub-option, that defines the compaction strategy class to use. The default supported class are @'SizeTieredCompactionStrategy'@, @'LeveledCompactionStrategy'@, @'DateTieredCompactionStrategy'@ and @'TimeWindowCompactionStrategy'@. Custom strategy can be provided by specifying the full class name as a "string constant":#constants. The rest of the sub-options depends on the chosen class. The sub-options supported by the default classes are:
 
 |_. option                         |_. supported compaction strategy |_. default    |_. description |
 | @enabled@                        | _all_                           | true         | A boolean denoting whether compaction should be enabled or not.|
@@ -362,6 +362,9 @@ The @compaction@ property must at least define the @'class'@ sub-option, that de
 | @timestamp_resolution@           | DateTieredCompactionStrategy    | MICROSECONDS | The timestamp resolution used when inserting data, could be MILLISECONDS, MICROSECONDS etc (should be understandable by Java TimeUnit) - don't change this unless you do mutations with USING TIMESTAMP <non_microsecond_timestamps> (or equivalent directly in the client)|
 | @base_time_seconds@              | DateTieredCompactionStrategy    | 60           | The base size of the time windows. |
 | @max_sstable_age_days@           | DateTieredCompactionStrategy    | 365          | SSTables only containing data that is older than this will never be compacted. |
+| @timestamp_resolution@           | TimeWindowCompactionStrategy    | MICROSECONDS | The timestamp resolution used when inserting data, could be MILLISECONDS, MICROSECONDS etc (should be understandable by Java TimeUnit) - don't change this unless you do mutations with USING TIMESTAMP <non_microsecond_timestamps> (or equivalent directly in the client)|
+| @compaction_window_unit@         | TimeWindowCompactionStrategy    | DAYS         | The Java TimeUnit used for the window size, set in conjunction with @compaction_window_size@. Must be one of DAYS, HOURS, MINUTES |
+| @compaction_window_size@         | TimeWindowCompactionStrategy    | 1            | The number of @compaction_window_unit@ units that make up a time window. |
 
 
 h4(#compressionOptions). Compression options
@@ -417,10 +420,32 @@ p.
 The @ALTER@ statement is used to manipulate table definitions. It allows for adding new columns, dropping existing ones, changing the type of existing columns, or updating the table options. As with table creation, @ALTER COLUMNFAMILY@ is allowed as an alias for @ALTER TABLE@.
 
 The @<tablename>@ is the table name optionally preceded by the keyspace name.  The @<instruction>@ defines the alteration to perform:
-* @ALTER@: Update the type of a given defined column. Note that the type of the "clustering columns":#createTablepartitionClustering cannot be modified as it induces the on-disk ordering of rows. Columns on which a "secondary index":#createIndexStmt is defined have the same restriction. Other columns are free from those restrictions (no validation of existing data is performed), but it is usually a bad idea to change the type to a non-compatible one, unless no data have been inserted for that column yet, as this could confuse CQL drivers/tools.
+* @ALTER@: Update the type of a given defined column. Note that the type of the "clustering columns":#createTablepartitionClustering can be modified only in very limited cases, as it induces the on-disk ordering of rows. Columns on which a "secondary index":#createIndexStmt is defined have the same restriction. To change the type of any other column, the column must already exist in type definition and its type should be compatible with the new type. No validation of existing data is performed. The compatibility table is available below.
 * @ADD@: Adds a new column to the table. The @<identifier>@ for the new column must not conflict with an existing column. Moreover, columns cannot be added to tables defined with the @COMPACT STORAGE@ option.
 * @DROP@: Removes a column from the table. Dropped columns will immediately become unavailable in the queries and will not be included in compacted sstables in the future. If a column is readded, queries won't return values written before the column was last dropped. It is assumed that timestamps represent actual time, so if this is not your case, you should NOT readd previously dropped columns. Columns can't be dropped from tables defined with the @COMPACT STORAGE@ option.
 * @WITH@: Allows to update the options of the table. The "supported @<option>@":#createTableOptions (and syntax) are the same as for the @CREATE TABLE@ statement except that @COMPACT STORAGE@ is not supported. Note that setting any @compaction@ sub-options has the effect of erasing all previous @compaction@ options, so you  need to re-specify all the sub-options if you want to keep them. The same note applies to the set of @compression@ sub-options.
+
+h4. CQL type compatibility:
+
+CQL data types may be converted only as the following table.
+
+|_. Data type may be altered to:|_.Data type|
+|timestamp|bigint|
+|ascii, bigint, boolean, date, decimal, double, float, inet, int, smallint, text, time, timestamp, timeuuid, tinyint, uuid, varchar, varint|blob|
+|int|date|
+|ascii, varchar|text|
+|bigint|time|
+|bigint|timestamp|
+|timeuuid|uuid|
+|ascii, text|varchar|
+|bigint, int, timestamp|varint|
+
+Clustering columns have stricter requirements, only the below conversions are allowed.
+
+|_. Data type may be altered to:|_.Data type|
+|ascii, text, varchar|blob|
+|ascii, varchar|text|
+|ascii, text|varchar|
 
 h3(#dropTableStmt). DROP TABLE
 
@@ -828,10 +853,7 @@ bc(syntax)..
 
 <names-list> ::= '(' <identifier> ( ',' <identifier> )* ')'
 
-<value-list> ::= '(' <term-or-literal> ( ',' <term-or-literal> )* ')'
-
-<term-or-literal> ::= <term>
-                    | <collection-literal>
+<value-list> ::= '(' <term> ( ',' <term> )* ')'
 
 <option> ::= TIMESTAMP <integer>
            | TTL <integer>
@@ -1045,13 +1067,14 @@ bc(syntax)..
                   ( ALLOW FILTERING )?
 
 <select-clause> ::= DISTINCT? <selection-list>
-                  | COUNT '(' ( '*' | '1' ) ')' (AS <identifier>)?
 
 <selection-list> ::= <selector> (AS <identifier>)? ( ',' <selector> (AS <identifier>)? )*
                    | '*'
 
 <selector> ::= <identifier>
+             | <term>
              | WRITETIME '(' <identifier> ')'
+             | COUNT '(' '*' ')'
              | TTL '(' <identifier> ')'
              | CAST '(' <selector> AS <type> ')'
              | <function> '(' (<selector> (',' <selector>)*)? ')'
@@ -1452,6 +1475,7 @@ Permissions on resources are granted to roles; there are several different types
 * The hierarchy of Data resources, Keyspaces and Tables has the structure @ALL KEYSPACES@ -> @KEYSPACE@ -> @TABLE@
 * Function resources have the structure @ALL FUNCTIONS@ -> @KEYSPACE@ -> @FUNCTION@
 * Resources representing roles have the structure @ALL ROLES@ -> @ROLE@
+* Resources representing JMX ObjectNames, which map to sets of MBeans/MXBeans, have the structure @ALL MBEANS@ -> @MBEAN@
 
 Permissions can be granted at any level of these hierarchies and they flow downwards. So granting a permission on a resource higher up the chain automatically grants that same permission on all resources lower down. For example, granting @SELECT@ on a @KEYSPACE@ automatically grants it on all @TABLES@ in that @KEYSPACE@. Likewise, granting a permission on @ALL FUNCTIONS@ grants it on every defined function, regardless of which keyspace it is scoped in. It is also possible to grant permissions on all functions scoped to a particular keyspace. 
 
@@ -1467,7 +1491,7 @@ The full set of available permissions is:
 * @DESCRIBE@
 * @EXECUTE@
 
-Not all permissions are applicable to every type of resource. For instance, @EXECUTE@ is only relevant in the context of functions; granting @EXECUTE@ on a resource representing a table is nonsensical. Attempting to @GRANT@ a permission on resource to which it cannot be applied results in an error response. The following illustrates which permissions can be granted on which types of resource, and which statements are enabled by that permission.
+Not all permissions are applicable to every type of resource. For instance, @EXECUTE@ is only relevant in the context of functions or mbeans; granting @EXECUTE@ on a resource representing a table is nonsensical. Attempting to @GRANT@ a permission on resource to which it cannot be applied results in an error response. The following illustrates which permissions can be granted on which types of resource, and which statements are enabled by that permission.
 
 |_. permission |_. resource                   |_. operations        |
 | @CREATE@     | @ALL KEYSPACES@              |@CREATE KEYSPACE@ ==<br>== @CREATE TABLE@ in any keyspace|
@@ -1494,9 +1518,15 @@ Not all permissions are applicable to every type of resource. For instance, @EXE
 | @SELECT@     | @ALL KEYSPACES@              |@SELECT@ on any table|
 | @SELECT@     | @KEYSPACE@                   |@SELECT@ on any table in keyspace|
 | @SELECT@     | @TABLE@                      |@SELECT@ on specified table|
+| @SELECT@     | @ALL MBEANS@                 |Call getter methods on any mbean|
+| @SELECT@     | @MBEANS@                     |Call getter methods on any mbean matching a wildcard pattern|
+| @SELECT@     | @MBEAN@                      |Call getter methods on named mbean|
 | @MODIFY@     | @ALL KEYSPACES@              |@INSERT@ on any table ==<br>== @UPDATE@ on any table ==<br>== @DELETE@ on any table ==<br>== @TRUNCATE@ on any table|
-| @MODIFY@     | @KEYSPACE@                  |@INSERT@ on any table in keyspace ==<br>== @UPDATE@ on any table in keyspace ==<br>  == @DELETE@ on any table in keyspace ==<br>== @TRUNCATE@ on any table in keyspace
+| @MODIFY@     | @KEYSPACE@                   |@INSERT@ on any table in keyspace ==<br>== @UPDATE@ on any table in keyspace ==<br>  == @DELETE@ on any table in keyspace ==<br>== @TRUNCATE@ on any table in keyspace
 | @MODIFY@     | @TABLE@                      |@INSERT@ ==<br>== @UPDATE@ ==<br>== @DELETE@ ==<br>== @TRUNCATE@|
+| @MODIFY@     | @ALL MBEANS@                 |Call setter methods on any mbean|
+| @MODIFY@     | @MBEANS@                     |Call setter methods on any mbean matching a wildcard pattern|
+| @MODIFY@     | @MBEAN@                      |Call setter methods on named mbean|
 | @AUTHORIZE@  | @ALL KEYSPACES@              |@GRANT PERMISSION@ on any table ==<br>== @REVOKE PERMISSION@ on any table|
 | @AUTHORIZE@  | @KEYSPACE@                   |@GRANT PERMISSION@ on table in keyspace ==<br>== @REVOKE PERMISSION@ on table in keyspace|
 | @AUTHORIZE@  | @TABLE@                      |@GRANT PERMISSION@ ==<br>== @REVOKE PERMISSION@ |
@@ -1504,12 +1534,21 @@ Not all permissions are applicable to every type of resource. For instance, @EXE
 | @AUTHORIZE@  | @ALL FUNCTIONS IN KEYSPACE@  |@GRANT PERMISSION@ in keyspace ==<br>== @REVOKE PERMISSION@ in keyspace|
 | @AUTHORIZE@  | @ALL FUNCTIONS IN KEYSPACE@  |@GRANT PERMISSION@ in keyspace ==<br>== @REVOKE PERMISSION@ in keyspace|
 | @AUTHORIZE@  | @FUNCTION@                   |@GRANT PERMISSION@ ==<br>== @REVOKE PERMISSION@|
+| @AUTHORIZE@  | @ALL MBEANS@                 |@GRANT PERMISSION@ on any mbean ==<br>== @REVOKE PERMISSION@ on any mbean|
+| @AUTHORIZE@  | @MBEANS@                     |@GRANT PERMISSION@ on any mbean matching a wildcard pattern ==<br>== @REVOKE PERMISSION@ on any mbean matching a wildcard pattern|
+| @AUTHORIZE@  | @MBEAN@                      |@GRANT PERMISSION@ on named mbean ==<br>== @REVOKE PERMISSION@ on named mbean|
 | @AUTHORIZE@  | @ALL ROLES@                  |@GRANT ROLE@ grant any role ==<br>== @REVOKE ROLE@ revoke any role|
 | @AUTHORIZE@  | @ROLES@                      |@GRANT ROLE@ grant role ==<br>== @REVOKE ROLE@ revoke role|
 | @DESCRIBE@   | @ALL ROLES@                  |@LIST ROLES@ all roles or only roles granted to another, specified role|
+| @DESCRIBE@   | @ALL MBEANS                  |Retrieve metadata about any mbean from the platform's MBeanServer|
+| @DESCRIBE@   | @MBEANS                      |Retrieve metadata about any mbean matching a wildcard patter from the platform's MBeanServer|
+| @DESCRIBE@   | @MBEAN                       |Retrieve metadata about a named mbean from the platform's MBeanServer|
 | @EXECUTE@    | @ALL FUNCTIONS@              |@SELECT@, @INSERT@, @UPDATE@ using any function ==<br>== use of any function in @CREATE AGGREGATE@|
 | @EXECUTE@    | @ALL FUNCTIONS IN KEYSPACE@  |@SELECT@, @INSERT@, @UPDATE@ using any function in keyspace ==<br>== use of any function in keyspace in @CREATE AGGREGATE@|
 | @EXECUTE@    | @FUNCTION@                   |@SELECT@, @INSERT@, @UPDATE@ using function ==<br>== use of function in @CREATE AGGREGATE@|
+| @EXECUTE@    | @ALL MBEANS@                 |Execute operations on any mbean|
+| @EXECUTE@    | @MBEANS@                     |Execute operations on any mbean matching a wildcard pattern|
+| @EXECUTE@    | @MBEAN@                      |Execute operations on named mbean|
 
 
 h3(#grantPermissionsStmt). GRANT PERMISSION
@@ -1528,6 +1567,8 @@ bc(syntax)..
              | ROLE <identifier>
              | ALL FUNCTIONS ( IN KEYSPACE <identifier> )?
              | FUNCTION <functionname>
+             | ALL MBEANS
+             | ( MBEAN | MBEANS ) <objectName>
 p. 
 
 __Sample:__ 
@@ -1582,7 +1623,9 @@ bc(syntax)..
              | ROLE <identifier>
              | ALL FUNCTIONS ( IN KEYSPACE <identifier> )?
              | FUNCTION <functionname>
-p. 
+             | ALL MBEANS
+             | ( MBEAN | MBEANS ) <objectName>
+p.
 
 __Sample:__ 
 
@@ -1610,7 +1653,9 @@ bc(syntax)..
              | ROLE <identifier>
              | ALL FUNCTIONS ( IN KEYSPACE <identifier> )?
              | FUNCTION <functionname>
-p. 
+             | ALL MBEANS
+             | ( MBEAN | MBEANS ) <objectName>
+p.
 
 __Sample:__
 
@@ -1631,7 +1676,9 @@ Show any permissions granted to @carlos@ or any of @carlos@'s roles, limited to 
 
 h2(#types). Data Types
 
-CQL supports a rich set of data types for columns defined in a table, including collection types. On top of those native and collection types, users can also provide custom types (through a JAVA class extending @AbstractType@ loadable by Cassandra). The syntax of types is thus:
+CQL supports a rich set of data types for columns defined in a table, including collection types. On top of those native
+and collection types, users can also provide custom types (through a JAVA class extending @AbstractType@ loadable by
+Cassandra). The syntax of types is thus:
 
 bc(syntax).. 
 <type> ::= <native-type>

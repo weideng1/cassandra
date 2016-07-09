@@ -21,10 +21,11 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.WritableByteChannel;
 
-import org.apache.cassandra.config.Config;
-
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
+
+import io.netty.util.Recycler;
+import org.apache.cassandra.config.Config;
 
 /**
  * An implementation of the DataOutputStream interface using a FastByteArrayOutputStream and exposing
@@ -39,19 +40,58 @@ public class DataOutputBuffer extends BufferedDataOutputStreamPlus
      */
     private static final long DOUBLING_THRESHOLD = Long.getLong(Config.PROPERTY_PREFIX + "DOB_DOUBLING_THRESHOLD_MB", 64);
 
+    /*
+     * Only recycle OutputBuffers up to 1Mb. Larger buffers will be trimmed back to this size.
+     */
+    private static final int MAX_RECYCLE_BUFFER_SIZE = 1024 * 1024;
+
+    private static final int DEFAULT_INITIAL_BUFFER_SIZE = 128;
+
+    public static final Recycler<DataOutputBuffer> RECYCLER = new Recycler<DataOutputBuffer>()
+    {
+        protected DataOutputBuffer newObject(Handle handle)
+        {
+            return new DataOutputBuffer(handle);
+        }
+    };
+
+    private final Recycler.Handle handle;
+
+    private DataOutputBuffer(Recycler.Handle handle)
+    {
+        this(DEFAULT_INITIAL_BUFFER_SIZE, handle);
+    }
+
     public DataOutputBuffer()
     {
-        this(128);
+        this(DEFAULT_INITIAL_BUFFER_SIZE);
     }
 
     public DataOutputBuffer(int size)
     {
-        super(ByteBuffer.allocate(size));
+        this(size, null);
     }
 
-    protected DataOutputBuffer(ByteBuffer buffer)
+    protected DataOutputBuffer(int size, Recycler.Handle handle)
+    {
+        this(ByteBuffer.allocate(size), handle);
+    }
+
+    protected DataOutputBuffer(ByteBuffer buffer, Recycler.Handle handle)
     {
         super(buffer);
+        this.handle = handle;
+    }
+
+    public void recycle()
+    {
+        assert handle != null;
+
+        if (buffer().capacity() <= MAX_RECYCLE_BUFFER_SIZE)
+        {
+            buffer.rewind();
+            RECYCLER.recycle(this, handle);
+        }
     }
 
     @Override
@@ -135,6 +175,11 @@ public class DataOutputBuffer extends BufferedDataOutputStreamPlus
         return new GrowingChannel();
     }
 
+    public void clear()
+    {
+        buffer.clear();
+    }
+
     @VisibleForTesting
     final class GrowingChannel implements WritableByteChannel
     {
@@ -187,6 +232,11 @@ public class DataOutputBuffer extends BufferedDataOutputStreamPlus
     public long position()
     {
         return getLength();
+    }
+
+    public ByteBuffer asNewBuffer()
+    {
+        return ByteBuffer.wrap(getData(), 0, getLength());
     }
 
     public byte[] toByteArray()

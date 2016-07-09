@@ -26,15 +26,18 @@ import java.util.Map;
 public class StatsHolder
 {
     public List<StatsKeyspace> keyspaces;
+    public final int numberOfTables;
 
-    public StatsHolder()
+    public StatsHolder(int numberOfTables)
     {
         keyspaces = new ArrayList<>();
+        this.numberOfTables = numberOfTables;
     }
 
-    public Map<String, HashMap<String, Object>> convert2Map()
+    public Map<String, Object> convert2Map()
     {
-        HashMap<String, HashMap<String, Object>> mpRet = new HashMap<>();
+        HashMap<String, Object> mpRet = new HashMap<>();
+        mpRet.put("total_number_of_tables", numberOfTables);
         for (StatsKeyspace keyspace : keyspaces)
         {
             // store each keyspace's metrics to map
@@ -71,6 +74,7 @@ public class StatsHolder
                 mpTable.put("local_write_count", table.localWriteCount);
                 mpTable.put("local_write_latency_ms", String.format("%01.3f", table.localWriteLatencyMs));
                 mpTable.put("pending_flushes", table.pendingFlushes);
+                mpTable.put("percent_repaired", table.percentRepaired);
                 mpTable.put("bloom_filter_false_positives", table.bloomFilterFalsePositives);
                 mpTable.put("bloom_filter_false_ratio", String.format("%01.5f", table.bloomFilterFalseRatio));
                 mpTable.put("bloom_filter_space_used", table.bloomFilterSpaceUsed);

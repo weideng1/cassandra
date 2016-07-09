@@ -63,7 +63,7 @@ public class MmappedRegionsTest
         File ret = File.createTempFile(fileName, "1");
         ret.deleteOnExit();
 
-        try (SequentialWriter writer = SequentialWriter.open(ret))
+        try (SequentialWriter writer = new SequentialWriter(ret))
         {
             writer.write(buffer);
             writer.finish();
@@ -297,12 +297,10 @@ public class MmappedRegionsTest
         File cf = File.createTempFile(f.getName() + ".metadata", "1");
         cf.deleteOnExit();
 
-        MetadataCollector sstableMetadataCollector = new MetadataCollector(new ClusteringComparator(BytesType.instance))
-                                                     .replayPosition(null);
-        try(SequentialWriter writer = new CompressedSequentialWriter(f,
-                                                                     cf.getAbsolutePath(),
-                                                                     CompressionParams.snappy(),
-                                                                     sstableMetadataCollector))
+        MetadataCollector sstableMetadataCollector = new MetadataCollector(new ClusteringComparator(BytesType.instance));
+        try(SequentialWriter writer = new CompressedSequentialWriter(f, cf.getAbsolutePath(),
+                                                                     null, SequentialWriterOption.DEFAULT,
+                                                                     CompressionParams.snappy(), sstableMetadataCollector))
         {
             writer.write(buffer);
             writer.finish();

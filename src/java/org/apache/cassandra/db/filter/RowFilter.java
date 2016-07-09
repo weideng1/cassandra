@@ -32,6 +32,7 @@ import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.cql3.Operator;
 import org.apache.cassandra.db.*;
+import org.apache.cassandra.db.context.*;
 import org.apache.cassandra.db.marshal.*;
 import org.apache.cassandra.db.partitions.ImmutableBTreePartition;
 import org.apache.cassandra.db.partitions.UnfilteredPartitionIterator;
@@ -134,6 +135,30 @@ public abstract class RowFilter implements Iterable<RowFilter.Expression>
      * @return the filtered iterator.
      */
     public abstract UnfilteredPartitionIterator filter(UnfilteredPartitionIterator iter, int nowInSec);
+
+    /**
+     * Whether the provided row in the provided partition satisfies this filter.
+     *
+     * @param metadata the table metadata.
+     * @param partitionKey the partition key for partition to test.
+     * @param row the row to test.
+     * @param nowInSec the current time in seconds (to know what is live and what isn't).
+     * @return {@code true} if {@code row} in partition {@code partitionKey} satisfies this row filter.
+     */
+    public boolean isSatisfiedBy(CFMetaData metadata, DecoratedKey partitionKey, Row row, int nowInSec)
+    {
+        // We purge all tombstones as the expressions isSatisfiedBy methods expects it
+        Row purged = row.purge(DeletionPurger.PURGE_ALL, nowInSec);
+        if (purged == null)
+            return expressions.isEmpty();
+
+        for (Expression e : expressions)
+        {
+            if (!e.isSatisfiedBy(metadata, partitionKey, purged))
+                return false;
+        }
+        return true;
+    }
 
     /**
      * Returns true if all of the expressions within this filter that apply to the partition key are satisfied by
@@ -654,6 +679,27 @@ public abstract class RowFilter implements Iterable<RowFilter.Expression>
                 case LTE:
                 case GTE:
                 case GT:
+                    {
+                        assert !column.isComplex() : "Only CONTAINS and CONTAINS_KEY are supported for 'complex' types";
+
+                        // In order to support operators on Counter types, their value has to be extracted from internal
+                        // representation. See CASSANDRA-11629
+                        if (column.type.isCounter())
+                        {
+                            ByteBuffer foundValue = getValue(metadata, partitionKey, row);
+                            if (foundValue == null)
+                                return false;
+
+                            ByteBuffer counterValue = LongType.instance.decompose(CounterContext.instance().total(foundValue));
+                            return operator.isSatisfiedBy(LongType.instance, counterValue, value);
+                        }
+                        else
+                        {
+                            // Note that CQL expression are always of the form 'x < 4', i.e. the tested value is on the left.
+                            ByteBuffer foundValue = getValue(metadata, partitionKey, row);
+                            return foundValue != null && operator.isSatisfiedBy(column.type, foundValue, value);
+                        }
+                    }
                 case NEQ:
                 case LIKE_PREFIX:
                 case LIKE_SUFFIX:
@@ -965,7 +1011,7 @@ public abstract class RowFilter implements Iterable<RowFilter.Expression>
      * registered before sending or receiving any messages containing expressions of that type.
      * Use of custom filtering expressions in a mixed version cluster should be handled with caution
      * as the order in which types are registered is significant: if continuity of use during upgrades
-     * is important, new types should registered last & obsoleted types should still be registered (
+     * is important, new types should registered last and obsoleted types should still be registered (
      * or dummy implementations registered in their place) to preserve consistent identifiers across
      * the cluster).
      *

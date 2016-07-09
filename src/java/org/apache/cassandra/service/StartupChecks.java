@@ -32,12 +32,16 @@ import org.slf4j.LoggerFactory;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
-import org.apache.cassandra.db.*;
+import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.Directories;
+import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.StartupException;
 import org.apache.cassandra.io.sstable.Descriptor;
 import org.apache.cassandra.io.util.FileUtils;
-import org.apache.cassandra.utils.*;
+import org.apache.cassandra.utils.CLibrary;
+import org.apache.cassandra.utils.FBUtilities;
+import org.apache.cassandra.utils.SigarLibrary;
 
 /**
  * Verifies that the system and environment is in a fit state to be started.
@@ -71,6 +75,7 @@ public class StartupChecks
     private final List<StartupCheck> DEFAULT_TESTS = ImmutableList.of(checkJemalloc,
                                                                       checkValidLaunchDate,
                                                                       checkJMXPorts,
+                                                                      checkJMXProperties,
                                                                       inspectJvmOptions,
                                                                       checkJnaInitialization,
                                                                       initSigarLibrary,
@@ -109,7 +114,7 @@ public class StartupChecks
 
     public static final StartupCheck checkJemalloc = new StartupCheck()
     {
-        public void execute() throws StartupException
+        public void execute()
         {
             if (FBUtilities.isWindows())
                 return;
@@ -145,7 +150,7 @@ public class StartupChecks
     {
         public void execute()
         {
-            String jmxPort = System.getProperty("com.sun.management.jmxremote.port");
+            String jmxPort = System.getProperty("cassandra.jmx.remote.port");
             if (jmxPort == null)
             {
                 logger.warn("JMX is not enabled to receive remote connections. Please see cassandra-env.sh for more info.");
@@ -155,7 +160,19 @@ public class StartupChecks
             }
             else
             {
-                logger.info("JMX is enabled to receive remote connections on port: " + jmxPort);
+                logger.info("JMX is enabled to receive remote connections on port: {}", jmxPort);
+            }
+        }
+    };
+
+    public static final StartupCheck checkJMXProperties = new StartupCheck()
+    {
+        public void execute()
+        {
+            if (System.getProperty("com.sun.management.jmxremote.port") != null)
+            {
+                logger.warn("Use of com.sun.management.jmxremote.port at startup is deprecated. " +
+                            "Please use cassandra.jmx.remote.port instead.");
             }
         }
     };
@@ -241,7 +258,7 @@ public class StartupChecks
 
             FileVisitor<Path> sstableVisitor = new SimpleFileVisitor<Path>()
             {
-                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs)
                 {
                     if (!Descriptor.isValidFile(file.getFileName().toString()))
                         return FileVisitResult.CONTINUE;

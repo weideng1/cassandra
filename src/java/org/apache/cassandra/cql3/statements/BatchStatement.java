@@ -120,9 +120,9 @@ public class BatchStatement implements CQLStatement
 
     public Iterable<org.apache.cassandra.cql3.functions.Function> getFunctions()
     {
-        Iterable<org.apache.cassandra.cql3.functions.Function> functions = attrs.getFunctions();
+        List<org.apache.cassandra.cql3.functions.Function> functions = new ArrayList<>();
         for (ModificationStatement statement : statements)
-            functions = Iterables.concat(functions, statement.getFunctions());
+            statement.addFunctionsTo(functions);
         return functions;
     }
 
@@ -530,7 +530,7 @@ public class BatchStatement implements CQLStatement
 
             // Use the CFMetadata of the first statement for partition key bind indexes.  If the statements affect
             // multiple tables, we won't send partition key bind indexes.
-            Short[] partitionKeyBindIndexes = (haveMultipleCFs || batchStatement.statements.isEmpty())? null
+            short[] partitionKeyBindIndexes = (haveMultipleCFs || batchStatement.statements.isEmpty())? null
                                                               : boundNames.getPartitionKeyBindIndexes(batchStatement.statements.get(0).cfm);
 
             return new ParsedStatement.Prepared(batchStatement, boundNames, partitionKeyBindIndexes);

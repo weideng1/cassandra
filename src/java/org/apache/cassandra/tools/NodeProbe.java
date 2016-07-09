@@ -85,6 +85,7 @@ import org.apache.cassandra.streaming.StreamState;
 import org.apache.cassandra.streaming.management.StreamStateCompositeData;
 
 import com.google.common.base.Function;
+import com.google.common.base.Strings;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Multimap;
@@ -225,7 +226,7 @@ public class NodeProbe implements AutoCloseable
                 mbeanServerConn, ManagementFactory.RUNTIME_MXBEAN_NAME, RuntimeMXBean.class);
     }
 
-    private RMIClientSocketFactory getRMIClientSocketFactory() throws IOException
+    private RMIClientSocketFactory getRMIClientSocketFactory()
     {
         if (Boolean.parseBoolean(System.getProperty("ssl.enable")))
             return new SslRMIClientSocketFactory();
@@ -799,26 +800,12 @@ public class NodeProbe implements AutoCloseable
 
     public String getDataCenter()
     {
-        try
-        {
-            return getEndpointSnitchInfoProxy().getDatacenter(getEndpoint());
-        }
-        catch (UnknownHostException e)
-        {
-            return "Unknown";
-        }
+        return getEndpointSnitchInfoProxy().getDatacenter();
     }
 
     public String getRack()
     {
-        try
-        {
-            return getEndpointSnitchInfoProxy().getRack(getEndpoint());
-        }
-        catch (UnknownHostException e)
-        {
-            return "Unknown";
-        }
+        return getEndpointSnitchInfoProxy().getRack();
     }
 
     public List<String> getKeyspaces()
@@ -1216,18 +1203,35 @@ public class NodeProbe implements AutoCloseable
         return ThreadPoolMetrics.getJmxThreadPools(mbeanServerConn);
     }
 
+    public int getNumberOfTables()
+    {
+        return spProxy.getNumberOfTables();
+    }
+
     /**
      * Retrieve ColumnFamily metrics
-     * @param ks Keyspace for which stats are to be displayed.
-     * @param cf ColumnFamily for which stats are to be displayed.
+     * @param ks Keyspace for which stats are to be displayed or null for the global value
+     * @param cf ColumnFamily for which stats are to be displayed or null for the keyspace value (if ks supplied)
      * @param metricName View {@link TableMetrics}.
      */
     public Object getColumnFamilyMetric(String ks, String cf, String metricName)
     {
         try
         {
-            String type = cf.contains(".") ? "IndexTable" : "Table";
-            ObjectName oName = new ObjectName(String.format("org.apache.cassandra.metrics:type=%s,keyspace=%s,scope=%s,name=%s", type, ks, cf, metricName));
+            ObjectName oName = null;
+            if (!Strings.isNullOrEmpty(ks) && !Strings.isNullOrEmpty(cf))
+            {
+                String type = cf.contains(".") ? "IndexTable" : "Table";
+                oName = new ObjectName(String.format("org.apache.cassandra.metrics:type=%s,keyspace=%s,scope=%s,name=%s", type, ks, cf, metricName));
+            }
+            else if (!Strings.isNullOrEmpty(ks))
+            {
+                oName = new ObjectName(String.format("org.apache.cassandra.metrics:type=Keyspace,keyspace=%s,name=%s", ks, metricName));
+            }
+            else
+            {
+                oName = new ObjectName(String.format("org.apache.cassandra.metrics:type=Table,name=%s", metricName));
+            }
             switch(metricName)
             {
                 case "BloomFilterDiskSpaceUsed":
@@ -1248,6 +1252,7 @@ public class NodeProbe implements AutoCloseable
                 case "MemtableLiveDataSize":
                 case "MemtableOffHeapSize":
                 case "MinPartitionSize":
+                case "PercentRepaired":
                 case "RecentBloomFilterFalsePositives":
                 case "RecentBloomFilterFalseRatio":
                 case "SnapshotsSize":

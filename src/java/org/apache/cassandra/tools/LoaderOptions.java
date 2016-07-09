@@ -1,3 +1,23 @@
+/*
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ */
 package org.apache.cassandra.tools;
 
 import java.io.File;
@@ -55,7 +75,7 @@ public class LoaderOptions
     public final int interDcThrottle;
     public final int storagePort;
     public final int sslStoragePort;
-    public final EncryptionOptions encOptions;
+    public final EncryptionOptions.ClientEncryptionOptions clientEncOptions;
     public final int connectionsPerHost;
     public final EncryptionOptions.ServerEncryptionOptions serverEncOptions;
     public final Set<InetAddress> hosts;
@@ -75,7 +95,7 @@ public class LoaderOptions
         interDcThrottle = builder.interDcThrottle;
         storagePort = builder.storagePort;
         sslStoragePort = builder.sslStoragePort;
-        encOptions = builder.encOptions;
+        clientEncOptions = builder.clientEncOptions;
         connectionsPerHost = builder.connectionsPerHost;
         serverEncOptions = builder.serverEncOptions;
         hosts = builder.hosts;
@@ -96,7 +116,7 @@ public class LoaderOptions
         int interDcThrottle = 0;
         int storagePort;
         int sslStoragePort;
-        EncryptionOptions encOptions = new EncryptionOptions.ClientEncryptionOptions();
+        EncryptionOptions.ClientEncryptionOptions clientEncOptions = new EncryptionOptions.ClientEncryptionOptions();
         int connectionsPerHost = 1;
         EncryptionOptions.ServerEncryptionOptions serverEncOptions = new EncryptionOptions.ServerEncryptionOptions();
         Set<InetAddress> hosts = new HashSet<>();
@@ -185,9 +205,9 @@ public class LoaderOptions
             return this;
         }
 
-        public Builder encOptions(EncryptionOptions encOptions)
+        public Builder encOptions(EncryptionOptions.ClientEncryptionOptions encOptions)
         {
-            this.encOptions = encOptions;
+            this.clientEncOptions = encOptions;
             return this;
         }
 
@@ -358,7 +378,7 @@ public class LoaderOptions
                 storagePort = config.storage_port;
                 sslStoragePort = config.ssl_storage_port;
                 throttle = config.stream_throughput_outbound_megabits_per_sec;
-                encOptions = config.client_encryption_options;
+                clientEncOptions = config.client_encryption_options;
                 serverEncOptions = config.server_encryption_options;
 
                 if (cmd.hasOption(THROTTLE_MBITS))
@@ -371,47 +391,53 @@ public class LoaderOptions
                     interDcThrottle = Integer.parseInt(cmd.getOptionValue(INTER_DC_THROTTLE_MBITS));
                 }
 
+                if (cmd.hasOption(SSL_TRUSTSTORE) || cmd.hasOption(SSL_TRUSTSTORE_PW) ||
+                            cmd.hasOption(SSL_KEYSTORE) || cmd.hasOption(SSL_KEYSTORE_PW))
+                {
+                    clientEncOptions.enabled = true;
+                }
+
                 if (cmd.hasOption(SSL_TRUSTSTORE))
                 {
-                    encOptions.truststore = cmd.getOptionValue(SSL_TRUSTSTORE);
+                    clientEncOptions.truststore = cmd.getOptionValue(SSL_TRUSTSTORE);
                 }
 
                 if (cmd.hasOption(SSL_TRUSTSTORE_PW))
                 {
-                    encOptions.truststore_password = cmd.getOptionValue(SSL_TRUSTSTORE_PW);
+                    clientEncOptions.truststore_password = cmd.getOptionValue(SSL_TRUSTSTORE_PW);
                 }
 
                 if (cmd.hasOption(SSL_KEYSTORE))
                 {
-                    encOptions.keystore = cmd.getOptionValue(SSL_KEYSTORE);
+                    clientEncOptions.keystore = cmd.getOptionValue(SSL_KEYSTORE);
                     // if a keystore was provided, lets assume we'll need to use
                     // it
-                    encOptions.require_client_auth = true;
+                    clientEncOptions.require_client_auth = true;
                 }
 
                 if (cmd.hasOption(SSL_KEYSTORE_PW))
                 {
-                    encOptions.keystore_password = cmd.getOptionValue(SSL_KEYSTORE_PW);
+                    clientEncOptions.keystore_password = cmd.getOptionValue(SSL_KEYSTORE_PW);
                 }
 
                 if (cmd.hasOption(SSL_PROTOCOL))
                 {
-                    encOptions.protocol = cmd.getOptionValue(SSL_PROTOCOL);
+                    clientEncOptions.protocol = cmd.getOptionValue(SSL_PROTOCOL);
                 }
 
                 if (cmd.hasOption(SSL_ALGORITHM))
                 {
-                    encOptions.algorithm = cmd.getOptionValue(SSL_ALGORITHM);
+                    clientEncOptions.algorithm = cmd.getOptionValue(SSL_ALGORITHM);
                 }
 
                 if (cmd.hasOption(SSL_STORE_TYPE))
                 {
-                    encOptions.store_type = cmd.getOptionValue(SSL_STORE_TYPE);
+                    clientEncOptions.store_type = cmd.getOptionValue(SSL_STORE_TYPE);
                 }
 
                 if (cmd.hasOption(SSL_CIPHER_SUITES))
                 {
-                    encOptions.cipher_suites = cmd.getOptionValue(SSL_CIPHER_SUITES).split(",");
+                    clientEncOptions.cipher_suites = cmd.getOptionValue(SSL_CIPHER_SUITES).split(",");
                 }
 
                 return this;

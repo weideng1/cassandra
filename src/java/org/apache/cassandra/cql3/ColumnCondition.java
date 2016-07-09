@@ -20,7 +20,6 @@ package org.apache.cassandra.cql3;
 import java.nio.ByteBuffer;
 import java.util.*;
 
-import com.google.common.collect.Iterables;
 import com.google.common.collect.Iterators;
 
 import org.apache.cassandra.config.CFMetaData;
@@ -43,14 +42,14 @@ public class ColumnCondition
     private final Term collectionElement;
 
     // For UDT, when testing the equality of a specific field, null otherwise.
-    private final ColumnIdentifier field;
+    private final FieldIdentifier field;
 
     private final Term value;  // a single value or a marker for a list of IN values
     private final List<Term> inValues;
 
     public final Operator operator;
 
-    private ColumnCondition(ColumnDefinition column, Term collectionElement, ColumnIdentifier field, Term value, List<Term> inValues, Operator op)
+    private ColumnCondition(ColumnDefinition column, Term collectionElement, FieldIdentifier field, Term value, List<Term> inValues, Operator op)
     {
         this.column = column;
         this.collectionElement = collectionElement;
@@ -74,7 +73,7 @@ public class ColumnCondition
         return new ColumnCondition(column, collectionElement, null, value, null, op);
     }
 
-    public static ColumnCondition condition(ColumnDefinition column, ColumnIdentifier udtField, Term value, Operator op)
+    public static ColumnCondition condition(ColumnDefinition column, FieldIdentifier udtField, Term value, Operator op)
     {
         return new ColumnCondition(column, null, udtField, value, null, op);
     }
@@ -89,7 +88,7 @@ public class ColumnCondition
         return new ColumnCondition(column, collectionElement, null, null, inValues, Operator.IN);
     }
 
-    public static ColumnCondition inCondition(ColumnDefinition column, ColumnIdentifier udtField, List<Term> inValues)
+    public static ColumnCondition inCondition(ColumnDefinition column, FieldIdentifier udtField, List<Term> inValues)
     {
         return new ColumnCondition(column, null, udtField, null, inValues, Operator.IN);
     }
@@ -104,23 +103,21 @@ public class ColumnCondition
         return new ColumnCondition(column, collectionElement, null, inMarker, null, Operator.IN);
     }
 
-    public static ColumnCondition inCondition(ColumnDefinition column, ColumnIdentifier udtField, Term inMarker)
+    public static ColumnCondition inCondition(ColumnDefinition column, FieldIdentifier udtField, Term inMarker)
     {
         return new ColumnCondition(column, null, udtField, inMarker, null, Operator.IN);
     }
 
-    public Iterable<Function> getFunctions()
+    public void addFunctionsTo(List<Function> functions)
     {
-        Iterable<Function> iter = Collections.emptyList();
         if (collectionElement != null)
-           iter = Iterables.concat(iter, collectionElement.getFunctions());
+           collectionElement.addFunctionsTo(functions);
         if (value != null)
-            iter = Iterables.concat(iter, value.getFunctions());
+           value.addFunctionsTo(functions);
         if (inValues != null)
             for (Term value : inValues)
                 if (value != null)
-                    iter = Iterables.concat(iter, value.getFunctions());
-        return iter;
+                    value.addFunctionsTo(functions);
     }
 
     /**
@@ -696,7 +693,7 @@ public class ColumnCondition
     /** A condition on a UDT field. IN operators are not supported here, see UDTFieldAccessInBound. */
     static class UDTFieldAccessBound extends Bound
     {
-        public final ColumnIdentifier field;
+        public final FieldIdentifier field;
         public final ByteBuffer value;
 
         private UDTFieldAccessBound(ColumnCondition condition, QueryOptions options) throws InvalidRequestException
@@ -717,7 +714,7 @@ public class ColumnCondition
             ByteBuffer cellValue;
             if (column.type.isMultiCell())
             {
-                Cell cell = getCell(row, column, userType.cellPathForField(field.bytes));
+                Cell cell = getCell(row, column, userType.cellPathForField(field));
                 cellValue = cell == null ? null : cell.value();
             }
             else
@@ -734,7 +731,7 @@ public class ColumnCondition
     /** An IN condition on a UDT field.  For example: IF user.name IN ('a', 'b') */
     static class UDTFieldAccessInBound extends Bound
     {
-        public final ColumnIdentifier field;
+        public final FieldIdentifier field;
         public final List<ByteBuffer> inValues;
 
         private UDTFieldAccessInBound(ColumnCondition condition, QueryOptions options) throws InvalidRequestException
@@ -762,7 +759,7 @@ public class ColumnCondition
             ByteBuffer cellValue;
             if (column.type.isMultiCell())
             {
-                Cell cell = getCell(row, column, userType.cellPathForField(field.bytes));
+                Cell cell = getCell(row, column, userType.cellPathForField(field));
                 cellValue = cell == null ? null : cell.value();
             }
             else
@@ -892,12 +889,12 @@ public class ColumnCondition
         private final Term.Raw collectionElement;
 
         // Can be null, only used with the syntax "IF udt.field = ..." (in which case it's 'field')
-        private final ColumnIdentifier.Raw udtField;
+        private final FieldIdentifier udtField;
 
         private final Operator operator;
 
         private Raw(Term.Raw value, List<Term.Raw> inValues, AbstractMarker.INRaw inMarker, Term.Raw collectionElement,
-                    ColumnIdentifier.Raw udtField, Operator op)
+                    FieldIdentifier udtField, Operator op)
         {
             this.value = value;
             this.inValues = inValues;
@@ -944,19 +941,19 @@ public class ColumnCondition
         }
 
         /** A condition on a UDT field. For example: "IF col.field = 'foo'" */
-        public static Raw udtFieldCondition(Term.Raw value, ColumnIdentifier.Raw udtField, Operator op)
+        public static Raw udtFieldCondition(Term.Raw value, FieldIdentifier udtField, Operator op)
         {
             return new Raw(value, null, null, null, udtField, op);
         }
 
         /** An IN condition on a collection element. For example: "IF col.field IN ('foo', 'bar', ...)" */
-        public static Raw udtFieldInCondition(ColumnIdentifier.Raw udtField, List<Term.Raw> inValues)
+        public static Raw udtFieldInCondition(FieldIdentifier udtField, List<Term.Raw> inValues)
         {
             return new Raw(null, inValues, null, null, udtField, Operator.IN);
         }
 
         /** An IN condition on a collection element with a single marker. For example: "IF col.field IN ?" */
-        public static Raw udtFieldInCondition(ColumnIdentifier.Raw udtField, AbstractMarker.INRaw inMarker)
+        public static Raw udtFieldInCondition(FieldIdentifier udtField, AbstractMarker.INRaw inMarker)
         {
             return new Raw(null, null, inMarker, null, udtField, Operator.IN);
         }
@@ -1004,26 +1001,24 @@ public class ColumnCondition
             else if (udtField != null)
             {
                 UserType userType = (UserType) receiver.type;
-                ColumnIdentifier fieldIdentifier = udtField.prepare(cfm);
-
-                int fieldPosition = userType.fieldPosition(fieldIdentifier);
+                int fieldPosition = userType.fieldPosition(udtField);
                 if (fieldPosition == -1)
-                    throw new InvalidRequestException(String.format("Unknown field %s for column %s", fieldIdentifier, receiver.name));
+                    throw new InvalidRequestException(String.format("Unknown field %s for column %s", udtField, receiver.name));
 
                 ColumnSpecification fieldReceiver = UserTypes.fieldSpecOf(receiver, fieldPosition);
                 if (operator == Operator.IN)
                 {
                     if (inValues == null)
-                        return ColumnCondition.inCondition(receiver, udtField.prepare(cfm), inMarker.prepare(keyspace, fieldReceiver));
+                        return ColumnCondition.inCondition(receiver, udtField, inMarker.prepare(keyspace, fieldReceiver));
 
                     List<Term> terms = new ArrayList<>(inValues.size());
                     for (Term.Raw value : inValues)
                         terms.add(value.prepare(keyspace, fieldReceiver));
-                    return ColumnCondition.inCondition(receiver, udtField.prepare(cfm), terms);
+                    return ColumnCondition.inCondition(receiver, udtField, terms);
                 }
                 else
                 {
-                    return ColumnCondition.condition(receiver, udtField.prepare(cfm), value.prepare(keyspace, fieldReceiver), operator);
+                    return ColumnCondition.condition(receiver, udtField, value.prepare(keyspace, fieldReceiver), operator);
                 }
             }
             else

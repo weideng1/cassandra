@@ -59,6 +59,9 @@ public enum TableStatsPrinter
         @Override
         public void printFormat(StatsHolder data, PrintStream out)
         {
+            out.println("Total number of tables: " + data.numberOfTables);
+            out.println("----------------");
+
             List<StatsKeyspace> keyspaces = data.keyspaces;
             for (StatsKeyspace keyspace : keyspaces)
             {
@@ -98,6 +101,7 @@ public enum TableStatsPrinter
                     out.println("\t\tLocal write count: " + table.localWriteCount);
                     out.printf("\t\tLocal write latency: %01.3f ms%n", table.localWriteLatencyMs);
                     out.println("\t\tPending flushes: " + table.pendingFlushes);
+                    out.println("\t\tPercent repaired: " + table.percentRepaired);
 
                     out.println("\t\tBloom filter false positives: " + table.bloomFilterFalsePositives);
                     out.printf("\t\tBloom filter false ratio: %01.5f%n", table.bloomFilterFalseRatio);

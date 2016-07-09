@@ -21,62 +21,72 @@ import java.io.IOException;
 
 import com.google.common.collect.Collections2;
 
+import net.nicoulaj.compilecommand.annotations.Inline;
 import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.io.util.DataInputPlus;
+import org.apache.cassandra.io.util.DataOutputBuffer;
 import org.apache.cassandra.io.util.DataOutputPlus;
+import org.apache.cassandra.utils.SearchIterator;
 
 /**
  * Serialize/deserialize a single Unfiltered (both on-wire and on-disk).
+ * <p>
  *
- *
- * The encoded format for an unfiltered is &lt;flags&gt;(&lt;row&gt;|&lt;marker&gt;) where:
- *   <p>
- *   &lt;flags&gt; is a byte (or two) whose bits are flags used by the rest of the serialization. Each
- *       flag is defined/explained below as the "Unfiltered flags" constants. One of those flags
- *       is an extension flag, and if present, trigger the rid of another byte that contains more
- *       flags. If the extension is not set, defaults are assumed for the flags of that 2nd byte.
- *   <p>
- *   &lt;row&gt; is &lt;clustering&gt;&lt;size&gt;[&lt;timestamp&gt;][&lt;ttl&gt;][&lt;deletion&gt;]&lt;sc1&gt;...&lt;sci&gt;&lt;cc1&gt;...&lt;ccj&gt; where
- *       &lt;clustering&gt; is the row clustering as serialized by {@code Clustering.serializer} (note
- *       that static row are an exception and don't have this).
- *   <p>
- *   <blockquote>
- *       &lt;size&gt; is the size of the whole unfiltered on disk (it's only used for sstables and is
- *       used to efficiently skip rows).
- *   <p>
- *       &lt;timestamp&gt;, &lt;ttl&gt; and &lt;deletion&gt; are the row timestamp, ttl and deletion
- *       whose presence is determined by the flags. &lt;sci&gt; is the simple columns of the row and &lt;ccj&gt; the
- *       complex ones.
- *   <p>
- *       The columns for the row are then serialized if they differ from those in the header,
- *       and each cell then follows:
- *       <ul>
- *         <li> Each simple column &lt;sci&gt; will simply be a &lt;cell&gt;
- *           (which might have no value, see below),
- *         <li> Each &lt;ccj&gt; will be [&lt;delTime&gt;]&lt;n&gt;&lt;cell1&gt;...&lt;celln&gt; where &lt;delTime&gt;
- *           is the deletion for this complex column (if flags indicates it present), &lt;n&gt;
- *           is the vint encoded value of n, i.e. &lt;celln&gt;'s 1-based index, &lt;celli&gt;
- *           are the &lt;cell&gt; for this complex column
- *       </ul>
- *    </blockquote>
- *    <p>
- *   &lt;marker&gt; is &lt;bound&gt;&lt;deletion&gt; where &lt;bound&gt; is the marker bound as serialized
- *       by {@code Slice.Bound.serializer} and &lt;deletion&gt; is the marker deletion
- *       time.
- *    <p>
- *   &lt;cell&gt; A cell start with a 1 byte &lt;flag&gt;. The 2nd and third flag bits indicate if
- *       it's a deleted or expiring cell. The 4th flag indicates if the value
- *       is empty or not. The 5th and 6th indicates if the timestamp and ttl/
- *       localDeletionTime for the cell are the same than the row one (if that
- *       is the case, those are not repeated for the cell).Follows the &lt;value&gt;
- *       (unless it's marked empty in the flag) and a delta-encoded long &lt;timestamp&gt;
- *       (unless the flag tells to use the row level one).
- *       Then if it's a deleted or expiring cell a delta-encoded int &lt;localDelTime&gt;
- *       and if it's expiring a delta-encoded int &lt;ttl&gt; (unless it's an expiring cell
- *       and the ttl and localDeletionTime are indicated by the flags to be the same
- *       than the row ones, in which case none of those appears).
- *
+ * The encoded format for an unfiltered is {@code <flags>(<row>|<marker>)} where:
+ * <ul>
+ *   <li>
+ *     {@code <flags>} is a byte (or two) whose bits are flags used by the rest
+ *     of the serialization. Each flag is defined/explained below as the
+ *     "Unfiltered flags" constants. One of those flags is an extension flag,
+ *     and if present, indicates the presence of a 2ndbyte that contains more
+ *     flags. If the extension is not set, defaults are assumed for the flags
+ *     of that 2nd byte.
+ *   </li>
+ *   <li>
+ *     {@code <row>} is
+ *        {@code <clustering><sizes>[<pkliveness>][<deletion>][<columns>]<columns_data>}
+ *     where:
+ *     <ul>
+ *       <li>{@code <clustering>} is the row clustering as serialized by
+ *           {@link org.apache.cassandra.db.Clustering.Serializer} (note that static row are an
+ *           exception and don't have this). </li>
+ *       <li>{@code <sizes>} are the sizes of the whole unfiltered on disk and
+ *           of the previous unfiltered. This is only present for sstables and
+ *           is used to efficiently skip rows (both forward and backward).</li>
+ *       <li>{@code <pkliveness>} is the row primary key liveness infos, and it
+ *           contains the timestamp, ttl and local deletion time of that info,
+ *           though some/all of those can be absent based on the flags. </li>
+ *       <li>{@code deletion} is the row deletion. It's presence is determined
+ *           by the flags and if present, it conists of both the deletion
+ *           timestamp and local deletion time.</li>
+ *       <li>{@code <columns>} are the columns present in the row  encoded by
+ *           {@link org.apache.cassandra.db.Columns.Serializer#serializeSubset}. It is absent if the row
+ *           contains all the columns of the {@code SerializationHeader} (which
+ *           is then indicated by a flag). </li>
+ *       <li>{@code <columns_data>} is the data for each of the column present
+ *           in the row. The encoding of each data depends on whether the data
+ *           is for a simple or complex column:
+ *           <ul>
+ *              <li>Simple columns are simply encoded as one {@code <cell>}</li>
+ *              <li>Complex columns are encoded as {@code [<delTime>]<n><cell1>...<celln>}
+ *                  where {@code <delTime>} is the deletion for this complex
+ *                  column (if flags indicates its presence), {@code <n>} is the
+ *                  vint encoded value of n, i.e. {@code <celln>}'s 1-based
+ *                  inde and {@code <celli>} are the {@code <cell>} for this
+ *                  complex column</li>
+ *           </ul>
+ *       </li>
+ *     </ul>
+ *   </li>
+ *   <li>
+ *     {@code <marker>} is {@code <bound><deletion>} where {@code <bound>} is
+ *     the marker bound as serialized by {@link org.apache.cassandra.db.ClusteringBoundOrBoundary.Serializer}
+ *     and {@code <deletion>} is the marker deletion time.
+ *   </li>
+ * </ul>
+ * <p>
+ * The serialization of a {@code <cell>} is defined by {@link Cell.Serializer}.
  */
 public class UnfilteredSerializer
 {
@@ -171,9 +181,37 @@ public class UnfilteredSerializer
 
         if (header.isForSSTable())
         {
-            out.writeUnsignedVInt(serializedRowBodySize(row, header, previousUnfilteredSize, version));
-            out.writeUnsignedVInt(previousUnfilteredSize);
+            DataOutputBuffer dob = DataOutputBuffer.RECYCLER.get();
+            try
+            {
+                serializeRowBody(row, flags, header, dob);
+
+                out.writeUnsignedVInt(dob.position() + TypeSizes.sizeofUnsignedVInt(previousUnfilteredSize));
+                // We write the size of the previous unfiltered to make reverse queries more efficient (and simpler).
+                // This is currently not used however and using it is tbd.
+                out.writeUnsignedVInt(previousUnfilteredSize);
+                out.write(dob.buffer());
+            }
+            finally
+            {
+                dob.recycle();
+            }
         }
+        else
+        {
+            serializeRowBody(row, flags, header, out);
+        }
+    }
+
+    @Inline
+    private void serializeRowBody(Row row, int flags, SerializationHeader header, DataOutputPlus out)
+    throws IOException
+    {
+        boolean isStatic = row.isStatic();
+
+        Columns headerColumns = header.columns(isStatic);
+        LivenessInfo pkLiveness = row.primaryKeyLivenessInfo();
+        Row.Deletion deletion = row.deletion();
 
         if ((flags & HAS_TIMESTAMP) != 0)
             header.writeTimestamp(pkLiveness.timestamp(), out);
@@ -185,19 +223,28 @@ public class UnfilteredSerializer
         if ((flags & HAS_DELETION) != 0)
             header.writeDeletionTime(deletion.time(), out);
 
-        if (!hasAllColumns)
+        if ((flags & HAS_ALL_COLUMNS) == 0)
             Columns.serializer.serializeSubset(Collections2.transform(row, ColumnData::column), headerColumns, out);
 
+        SearchIterator<ColumnDefinition, ColumnDefinition> si = headerColumns.iterator();
         for (ColumnData data : row)
         {
+            // We can obtain the column for data directly from data.column(). However, if the cell/complex data
+            // originates from a sstable, the column we'll get will have the type used when the sstable was serialized,
+            // and if that type have been recently altered, that may not be the type we want to serialize the column
+            // with. So we use the ColumnDefinition from the "header" which is "current". Also see #11810 for what
+            // happens if we don't do that.
+            ColumnDefinition column = si.next(data.column());
+            assert column != null;
+
             if (data.column.isSimple())
-                Cell.serializer.serialize((Cell) data, out, pkLiveness, header);
+                Cell.serializer.serialize((Cell) data, column, out, pkLiveness, header);
             else
-                writeComplexColumn((ComplexColumnData) data, hasComplexDeletion, pkLiveness, header, out);
+                writeComplexColumn((ComplexColumnData) data, column, (flags & HAS_COMPLEX_DELETION) != 0, pkLiveness, header, out);
         }
     }
 
-    private void writeComplexColumn(ComplexColumnData data, boolean hasComplexDeletion, LivenessInfo rowLiveness, SerializationHeader header, DataOutputPlus out)
+    private void writeComplexColumn(ComplexColumnData data, ColumnDefinition column, boolean hasComplexDeletion, LivenessInfo rowLiveness, SerializationHeader header, DataOutputPlus out)
     throws IOException
     {
         if (hasComplexDeletion)
@@ -205,7 +252,7 @@ public class UnfilteredSerializer
 
         out.writeUnsignedVInt(data.cellsCount());
         for (Cell cell : data)
-            Cell.serializer.serialize(cell, out, rowLiveness, header);
+            Cell.serializer.serialize(cell, column, out, rowLiveness, header);
     }
 
     private void serialize(RangeTombstoneMarker marker, SerializationHeader header, DataOutputPlus out, long previousUnfilteredSize, int version)
@@ -285,18 +332,22 @@ public class UnfilteredSerializer
         if (!hasAllColumns)
             size += Columns.serializer.serializedSubsetSize(Collections2.transform(row, ColumnData::column), header.columns(isStatic));
 
+        SearchIterator<ColumnDefinition, ColumnDefinition> si = headerColumns.iterator();
         for (ColumnData data : row)
         {
+            ColumnDefinition column = si.next(data.column());
+            assert column != null;
+
             if (data.column.isSimple())
-                size += Cell.serializer.serializedSize((Cell) data, pkLiveness, header);
+                size += Cell.serializer.serializedSize((Cell) data, column, pkLiveness, header);
             else
-                size += sizeOfComplexColumn((ComplexColumnData) data, hasComplexDeletion, pkLiveness, header);
+                size += sizeOfComplexColumn((ComplexColumnData) data, column, hasComplexDeletion, pkLiveness, header);
         }
 
         return size;
     }
 
-    private long sizeOfComplexColumn(ComplexColumnData data, boolean hasComplexDeletion, LivenessInfo rowLiveness, SerializationHeader header)
+    private long sizeOfComplexColumn(ComplexColumnData data, ColumnDefinition column, boolean hasComplexDeletion, LivenessInfo rowLiveness, SerializationHeader header)
     {
         long size = 0;
 
@@ -305,7 +356,7 @@ public class UnfilteredSerializer
 
         size += TypeSizes.sizeofUnsignedVInt(data.cellsCount());
         for (Cell cell : data)
-            size += Cell.serializer.serializedSize(cell, rowLiveness, header);
+            size += Cell.serializer.serializedSize(cell, column, rowLiveness, header);
 
         return size;
     }
@@ -366,9 +417,18 @@ public class UnfilteredSerializer
         }
         else
         {
-            assert !isStatic(extendedFlags); // deserializeStaticRow should be used for that.
+            // deserializeStaticRow should be used for that.
+            if (isStatic(extendedFlags))
+                throw new IOException("Corrupt flags value for unfiltered partition (isStatic flag set): " + flags);
+
             builder.newRow(Clustering.serializer.deserialize(in, helper.version, header.clusteringTypes()));
-            return deserializeRowBody(in, header, helper, flags, extendedFlags, builder);
+            Row row = deserializeRowBody(in, header, helper, flags, extendedFlags, builder);
+            // we do not write empty rows because Rows.collectStats(), called by BTW.applyToRow(), asserts that rows are not empty
+            // if we don't throw here, then later the very same assertion in Rows.collectStats() will fail compactions
+            // see BlackListingCompactionsTest and CASSANDRA-9530 for details
+            if (row.isEmpty())
+                throw new IOException("Corrupt empty row found in unfiltered partition");
+            return row;
         }
     }
 

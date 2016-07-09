@@ -20,14 +20,18 @@ package org.apache.cassandra.streaming;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.*;
 
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
+import org.apache.cassandra.db.lifecycle.SSTableIntervalTree;
 import org.apache.cassandra.db.lifecycle.SSTableSet;
+import org.apache.cassandra.db.lifecycle.View;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -208,7 +212,7 @@ public class StreamSession implements IEndpointStateChangeSubscriber
     public LifecycleTransaction getTransaction(UUID cfId)
     {
         assert receivers.containsKey(cfId);
-        return receivers.get(cfId).txn;
+        return receivers.get(cfId).getTransaction();
     }
 
     /**
@@ -276,14 +280,15 @@ public class StreamSession implements IEndpointStateChangeSubscriber
      * @param flushTables flush tables?
      * @param repairedAt the time the repair started.
      */
-    public void addTransferRanges(String keyspace, Collection<Range<Token>> ranges, Collection<String> columnFamilies, boolean flushTables, long repairedAt)
+    public synchronized void addTransferRanges(String keyspace, Collection<Range<Token>> ranges, Collection<String> columnFamilies, boolean flushTables, long repairedAt)
     {
+        failIfFinished();
         Collection<ColumnFamilyStore> stores = getColumnFamilyStores(keyspace, columnFamilies);
         if (flushTables)
             flushSSTables(stores);
 
         List<Range<Token>> normalizedRanges = Range.normalize(ranges);
-        List<SSTableStreamingSections> sections = getSSTableSectionsForRanges(normalizedRanges, stores, repairedAt);
+        List<SSTableStreamingSections> sections = getSSTableSectionsForRanges(normalizedRanges, stores, repairedAt, isIncremental);
         try
         {
             addTransferFiles(sections);
@@ -293,6 +298,12 @@ public class StreamSession implements IEndpointStateChangeSubscriber
             for (SSTableStreamingSections release : sections)
                 release.ref.release();
         }
+    }
+
+    private void failIfFinished()
+    {
+        if (state() == State.COMPLETE || state() == State.FAILED)
+            throw new RuntimeException(String.format("Stream %s is finished with state %s", planId(), state().name()));
     }
 
     private Collection<ColumnFamilyStore> getColumnFamilyStores(String keyspace, Collection<String> columnFamilies)
@@ -311,7 +322,8 @@ public class StreamSession implements IEndpointStateChangeSubscriber
         return stores;
     }
 
-    private List<SSTableStreamingSections> getSSTableSectionsForRanges(Collection<Range<Token>> ranges, Collection<ColumnFamilyStore> stores, long overriddenRepairedAt)
+    @VisibleForTesting
+    public static List<SSTableStreamingSections> getSSTableSectionsForRanges(Collection<Range<Token>> ranges, Collection<ColumnFamilyStore> stores, long overriddenRepairedAt, final boolean isIncremental)
     {
         Refs<SSTableReader> refs = new Refs<>();
         try
@@ -323,6 +335,7 @@ public class StreamSession implements IEndpointStateChangeSubscriber
                     keyRanges.add(Range.makeRowRange(range));
                 refs.addAll(cfStore.selectAndReference(view -> {
                     Set<SSTableReader> sstables = Sets.newHashSet();
+                    SSTableIntervalTree intervalTree = SSTableIntervalTree.build(view.select(SSTableSet.CANONICAL));
                     for (Range<PartitionPosition> keyRange : keyRanges)
                     {
                         // keyRange excludes its start, while sstableInBounds is inclusive (of both start and end).
@@ -331,16 +344,15 @@ public class StreamSession implements IEndpointStateChangeSubscriber
                         // sort after all keys having the token. That "fake" key cannot however be equal to any real key, so that even
                         // including keyRange.left will still exclude any key having the token of the original token range, and so we're
                         // still actually selecting what we wanted.
-                        for (SSTableReader sstable : view.sstablesInBounds(SSTableSet.CANONICAL, keyRange.left, keyRange.right))
+                        for (SSTableReader sstable : View.sstablesInBounds(keyRange.left, keyRange.right, intervalTree))
                         {
-                            // sstableInBounds may contain early opened sstables
                             if (!isIncremental || !sstable.isRepaired())
                                 sstables.add(sstable);
                         }
                     }
 
                     if (logger.isDebugEnabled())
-                        logger.debug("ViewFilter for {}/{} sstables", sstables.size(), Iterables.size(view.sstables(SSTableSet.CANONICAL)));
+                        logger.debug("ViewFilter for {}/{} sstables", sstables.size(), Iterables.size(view.select(SSTableSet.CANONICAL)));
                     return sstables;
                 }).refs);
             }
@@ -365,8 +377,9 @@ public class StreamSession implements IEndpointStateChangeSubscriber
         }
     }
 
-    public void addTransferFiles(Collection<SSTableStreamingSections> sstableDetails)
+    public synchronized void addTransferFiles(Collection<SSTableStreamingSections> sstableDetails)
     {
+        failIfFinished();
         Iterator<SSTableStreamingSections> iter = sstableDetails.iterator();
         while (iter.hasNext())
         {
@@ -516,10 +529,20 @@ public class StreamSession implements IEndpointStateChangeSubscriber
      */
     public void onError(Throwable e)
     {
-        logger.error("[Stream #{}] Streaming error occurred on session with peer {}{}", planId(),
-                                                                                        peer.getHostAddress(),
-                                                                                        peer.equals(connecting) ? "" : " through " + connecting.getHostAddress(),
-                                                                                        e);
+        if (e instanceof SocketTimeoutException)
+        {
+            logger.error("[Stream #{}] Streaming socket timed out. This means the session peer stopped responding or " +
+                         "is still processing received data. If there is no sign of failure in the other end or a very " +
+                         "dense table is being transferred you may want to increase streaming_socket_timeout_in_ms " +
+                         "property. Current value is {}ms.", planId(), DatabaseDescriptor.getStreamingSocketTimeout(), e);
+        }
+        else
+        {
+            logger.error("[Stream #{}] Streaming error occurred on session with peer {}{}", planId(),
+                                                                                            peer.getHostAddress(),
+                                                                                            peer.equals(connecting) ? "" : " through " + connecting.getHostAddress(),
+                                                                                            e);
+        }
         // send session failure message
         if (handler.isOutgoingConnected())
             handler.sendMessage(new SessionFailedMessage());
@@ -732,8 +755,9 @@ public class StreamSession implements IEndpointStateChangeSubscriber
         FBUtilities.waitOnFutures(flushes);
     }
 
-    private void prepareReceiving(StreamSummary summary)
+    private synchronized void prepareReceiving(StreamSummary summary)
     {
+        failIfFinished();
         if (summary.files > 0)
             receivers.put(summary.cfId, new StreamReceiveTask(this, summary.cfId, summary.files, summary.totalSize));
     }

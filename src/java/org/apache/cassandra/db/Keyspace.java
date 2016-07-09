@@ -19,7 +19,6 @@ package org.apache.cassandra.db;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
@@ -27,12 +26,14 @@ import java.util.concurrent.locks.Lock;
 
 import com.google.common.base.Function;
 import com.google.common.collect.Iterables;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.concurrent.StageManager;
 import org.apache.cassandra.config.*;
 import org.apache.cassandra.db.commitlog.CommitLog;
-import org.apache.cassandra.db.commitlog.ReplayPosition;
+import org.apache.cassandra.db.commitlog.CommitLogPosition;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.lifecycle.SSTableSet;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
@@ -48,12 +49,8 @@ import org.apache.cassandra.metrics.KeyspaceMetrics;
 import org.apache.cassandra.schema.KeyspaceMetadata;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.tracing.Tracing;
-import org.apache.cassandra.utils.ByteBufferUtil;
-import org.apache.cassandra.utils.FBUtilities;
-import org.apache.cassandra.utils.JVMStabilityInspector;
+import org.apache.cassandra.utils.*;
 import org.apache.cassandra.utils.concurrent.OpOrder;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * It represents a Keyspace.
@@ -291,7 +288,7 @@ public class Keyspace
      */
     public static void clearSnapshot(String snapshotName, String keyspace)
     {
-        List<File> snapshotDirs = Directories.getKSChildDirectories(keyspace);
+        List<File> snapshotDirs = Directories.getKSChildDirectories(keyspace, ColumnFamilyStore.getInitialDirectories());
         Directories.clearSnapshot(snapshotName, snapshotDirs);
     }
 
@@ -451,7 +448,8 @@ public class Keyspace
                     for (int j = 0; j < i; j++)
                         locks[j].unlock();
 
-                    if ((System.currentTimeMillis() - mutation.createdAt) > DatabaseDescriptor.getWriteRpcTimeout())
+                    // avoid throwing a WTE during commitlog replay
+                    if (!isClReplay && (System.currentTimeMillis() - mutation.createdAt) > DatabaseDescriptor.getWriteRpcTimeout())
                     {
                         logger.trace("Could not acquire lock for {} and table {}", ByteBufferUtil.bytesToHex(mutation.key().getKey()), columnFamilyStores.get(cfid).name);
                         Tracing.trace("Could not acquire MV lock");
@@ -464,12 +462,9 @@ public class Keyspace
                     {
                         // This view update can't happen right now. so rather than keep this thread busy
                         // we will re-apply ourself to the queue and try again later
-                        StageManager.getStage(Stage.MUTATION).execute(() -> {
-                            if (writeCommitLog)
-                                apply(mutation, true, true, isClReplay, mark);
-                            else
-                                apply(mutation, false, true, isClReplay, mark);
-                        });
+                        StageManager.getStage(Stage.MUTATION).execute(() ->
+                            apply(mutation, writeCommitLog, true, isClReplay, mark)
+                        );
 
                         return mark;
                     }
@@ -491,11 +486,11 @@ public class Keyspace
         try (OpOrder.Group opGroup = writeOrder.start())
         {
             // write the mutation to the commitlog and memtables
-            ReplayPosition replayPosition = null;
+            CommitLogPosition commitLogPosition = null;
             if (writeCommitLog)
             {
                 Tracing.trace("Appending to commitlog");
-                replayPosition = CommitLog.instance.add(mutation);
+                commitLogPosition = CommitLog.instance.add(mutation);
             }
 
             for (PartitionUpdate upd : mutation.getPartitionUpdates())
@@ -513,7 +508,7 @@ public class Keyspace
                     try
                     {
                         Tracing.trace("Creating materialized view mutations from base table replica");
-                        viewManager.pushViewReplicaUpdates(upd, !isClReplay, baseComplete);
+                        viewManager.forTable(upd.metadata()).pushViewReplicaUpdates(upd, !isClReplay, baseComplete);
                     }
                     catch (Throwable t)
                     {
@@ -528,7 +523,7 @@ public class Keyspace
                 UpdateTransaction indexTransaction = updateIndexes
                                                      ? cfs.indexManager.newUpdateTransaction(upd, opGroup, nowInSec)
                                                      : UpdateTransaction.NO_OP;
-                cfs.apply(upd, indexTransaction, opGroup, replayPosition);
+                cfs.apply(upd, indexTransaction, opGroup, commitLogPosition);
                 if (requiresViewUpdate)
                     baseComplete.set(System.currentTimeMillis());
             }
@@ -564,10 +559,11 @@ public class Keyspace
                                                                                       FBUtilities.nowInSeconds(),
                                                                                       key);
 
-        try (OpOrder.Group opGroup = cfs.keyspace.writeOrder.start();
-             UnfilteredRowIterator partition = cmd.queryMemtableAndDisk(cfs, opGroup))
+        try (ReadExecutionController controller = cmd.executionController();
+             UnfilteredRowIterator partition = cmd.queryMemtableAndDisk(cfs, controller);
+             OpOrder.Group writeGroup = cfs.keyspace.writeOrder.start())
         {
-            cfs.indexManager.indexPartition(partition, opGroup, indexes, cmd.nowInSec());
+            cfs.indexManager.indexPartition(partition, writeGroup, indexes, cmd.nowInSec());
         }
     }
 
