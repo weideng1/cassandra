@@ -14,6 +14,58 @@ restore snapshots created with the previous major version using the
 using the provided 'sstableupgrade' tool.
 
 
+3.10
+====
+
+New features
+------------
+   - Support for GROUP BY queries has been added.
+   - A new compaction-stress tool has been added to test the throughput of compaction
+     for any cassandra-stress user schema.  see compaction-stress help for how to use.
+   - Compaction can now take into account overlapping tables that don't take part
+     in the compaction to look for deleted or overwritten data in the compacted tables.
+     Then such data is found, it can be safely discarded, which in turn should enable
+     the removal of tombstones over that data.
+
+     The behavior can be engaged in two ways:
+       - as a "nodetool garbagecollect -g CELL/ROW" operation, which applies
+         single-table compaction on all sstables to discard deleted data in one step.
+       - as a "provide_overlapping_tombstones:CELL/ROW/NONE" compaction strategy flag,
+         which uses overlapping tables as a source of deletions/overwrites during all
+         compactions.
+     The argument specifies the granularity at which deleted data is to be found:
+       - If ROW is specified, only whole deleted rows (or sets of rows) will be
+         discarded.
+       - If CELL is specified, any columns whose value is overwritten or deleted
+         will also be discarded.
+       - NONE (default) specifies the old behavior, overlapping tables are not used to
+         decide when to discard data.
+     Which option to use depends on your workload, both ROW and CELL increase the
+     disk load on compaction (especially with the size-tiered compaction strategy),
+     with CELL being more resource-intensive. Both should lead to better read
+     performance if deleting rows (resp. overwriting or deleting cells) is common.
+   - Prepared statements are now persisted in the table prepared_statements in
+     the system keyspace. Upon startup, this table is used to preload all
+     previously prepared statements - i.e. in many cases clients do not need to
+     re-prepare statements against restarted nodes.
+   - cqlsh can now connect to older Cassandra versions by downgrading the native
+     protocol version. Please note that this is currently not part of our release
+     testing and, as a consequence, it is not guaranteed to work in all cases.
+     See CASSANDRA-12150 for more details.
+   - Snapshots that are automatically taken before a table is dropped or truncated
+     will have a "dropped" or "truncated" prefix on their snapshot tag name.
+   - Metrics are exposed for successful and failed authentication attempts.
+     These can be located using the object names org.apache.cassandra.metrics:type=Client,name=AuthSuccess
+     and org.apache.cassandra.metrics:type=Client,name=AuthFailure respectively.
+   - Add support to "unset" JSON fields in prepared statements by specifying DEFAULT UNSET.
+     See CASSANDRA-11424 for details
+
+Upgrading
+---------
+    - Logs written to stdout are now consistent with logs written to files.
+      Time is now local (it was UTC on the console and local in files). Date, thread, file
+      and line info where added to stdout. (see CASSANDRA-12004)
+
 3.8
 ===
 
@@ -39,6 +91,9 @@ New features
      the data/cdc_raw directory until removed by the user and writes to CDC-enabled tables
      will be rejected with a WriteTimeoutException once cdc_total_space_in_mb is reached
      between unflushed CommitLogSegments and cdc_raw.
+     NOTE: CDC is disabled by default in the .yaml file. Do not enable CDC on a mixed-version
+     cluster as it will lead to exceptions which can interrupt traffic. Once all nodes
+     have been upgraded to 3.8 it is safe to enable this feature and restart the cluster.
 
 Upgrading
 ---------
@@ -48,13 +103,6 @@ Upgrading
       those under a different name, change your code to use the new names and
       drop the old versions, and this _before_ upgrade (see CASSANDRA-10783 for more
       details).
-    - Due to changes in schema migration handling and the storage format after 3.0, you will
-      see error messages such as:
-         "java.lang.RuntimeException: Unknown column cdc during deserialization"
-      in your system logs on a mixed-version cluster during upgrades. This error message
-      is harmless and due to the 3.8 nodes having cdc added to their schema tables while
-      the <3.8 nodes do not. This message should cease once all nodes are upgraded to 3.8.
-      As always, refrain from schema changes during cluster upgrades.
 
 Deprecation
 -----------
@@ -106,8 +154,9 @@ New features
      a QueryHandler implementation. See CASSANDRA-11295 for more details.
 
 
+
 3.4
-=====
+===
 
 New features
 ------------
@@ -2145,4 +2194,3 @@ key in a given ColumnFamily) is limited by available memory, because
 compaction deserializes each row before merging.
 
 See https://issues.apache.org/jira/browse/CASSANDRA-16
-

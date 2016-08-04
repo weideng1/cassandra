@@ -33,7 +33,6 @@ import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.rows.BTreeRow;
 import org.apache.cassandra.db.filter.ColumnFilter;
 import org.apache.cassandra.db.lifecycle.SSTableSet;
 import org.apache.cassandra.db.rows.UnfilteredRowIterator;
@@ -172,7 +171,7 @@ public class TTLExpiryTest
 
         new RowUpdateBuilder(cfs.metadata, timestamp, 1, key)
             .add("col2", ByteBufferUtil.EMPTY_BYTE_BUFFER)
-            .addMapEntry("col8", "bar", "foo")
+            .add("col8", Collections.singletonMap("bar", "foo"))
             .delete("col1")
             .build()
             .applyUnsafe();

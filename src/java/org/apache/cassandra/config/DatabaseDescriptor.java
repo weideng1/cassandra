@@ -399,6 +399,11 @@ public class DatabaseDescriptor
         }
         paritionerName = partitioner.getClass().getCanonicalName();
 
+        if (config.gc_log_threshold_in_ms < 0)
+        {
+            throw new ConfigurationException("gc_log_threshold_in_ms must be a positive integer");
+        }
+
         if (conf.gc_warn_threshold_in_ms < 0)
         {
             throw new ConfigurationException("gc_warn_threshold_in_ms must be a positive integer");
@@ -472,7 +477,7 @@ public class DatabaseDescriptor
         {
             throw new ConfigurationException("Missing endpoint_snitch directive", false);
         }
-        snitch = createEndpointSnitch(conf.endpoint_snitch);
+        snitch = createEndpointSnitch(conf.dynamic_snitch, conf.endpoint_snitch);
         EndpointSnitchInfo.create();
 
         localDC = snitch.getDatacenter(FBUtilities.getBroadcastAddress());
@@ -661,11 +666,22 @@ public class DatabaseDescriptor
         if (conf.hints_directory.equals(conf.saved_caches_directory))
             throw new ConfigurationException("saved_caches_directory must not be the same as the hints_directory", false);
 
+        if (conf.memtable_flush_writers == null)
+        {
+            conf.memtable_flush_writers = conf.data_file_directories.length == 1 ? 2 : 1;
+        }
+
         if (conf.memtable_flush_writers < 1)
             throw new ConfigurationException("memtable_flush_writers must be at least 1, but was " + conf.memtable_flush_writers, false);
 
         if (conf.memtable_cleanup_threshold == null)
+        {
             conf.memtable_cleanup_threshold = (float) (1.0 / (1 + conf.memtable_flush_writers));
+        }
+        else
+        {
+            logger.warn("memtable_cleanup_threshold has been deprecated and should be removed from cassandra.yaml");
+        }
 
         if (conf.memtable_cleanup_threshold < 0.01f)
             throw new ConfigurationException("memtable_cleanup_threshold must be >= 0.01, but was " + conf.memtable_cleanup_threshold, false);
@@ -842,12 +858,12 @@ public class DatabaseDescriptor
         }
     }
 
-    private static IEndpointSnitch createEndpointSnitch(String snitchClassName) throws ConfigurationException
+    public static IEndpointSnitch createEndpointSnitch(boolean dynamic, String snitchClassName) throws ConfigurationException
     {
         if (!snitchClassName.contains("."))
             snitchClassName = "org.apache.cassandra.locator." + snitchClassName;
         IEndpointSnitch snitch = FBUtilities.construct(snitchClassName, "snitch");
-        return conf.dynamic_snitch ? new DynamicEndpointSnitch(snitch) : snitch;
+        return dynamic ? new DynamicEndpointSnitch(snitch) : snitch;
     }
 
     public static IAuthenticator getAuthenticator()
@@ -1291,6 +1307,7 @@ public class DatabaseDescriptor
             case READ:
                 return getReadRpcTimeout();
             case RANGE_SLICE:
+            case PAGED_RANGE:
                 return getRangeRpcTimeout();
             case TRUNCATE:
                 return getTruncateRpcTimeout();
@@ -1375,6 +1392,11 @@ public class DatabaseDescriptor
 
     public static int getCompactionLargePartitionWarningThreshold() { return conf.compaction_large_partition_warning_threshold_mb * 1024 * 1024; }
 
+    public static long getMinFreeSpacePerDriveInBytes()
+    {
+        return conf.min_free_space_per_drive_in_mb * 1024L * 1024L;
+    }
+
     public static boolean getDisableSTCSInL0()
     {
         return Boolean.getBoolean("cassandra.disable_stcs_in_l0");
@@ -1434,6 +1456,11 @@ public class DatabaseDescriptor
     public static int getCommitLogMaxCompressionBuffersInPool()
     {
         return conf.commitlog_max_compression_buffers_in_pool;
+    }
+
+    public static void setCommitLogMaxCompressionBuffersPerPool(int buffers)
+    {
+        conf.commitlog_max_compression_buffers_in_pool = buffers;
     }
 
     public static int getMaxMutationSize()
@@ -1893,7 +1920,7 @@ public class DatabaseDescriptor
 
     public static int getSSTablePreempiveOpenIntervalInMB()
     {
-        return FBUtilities.isWindows() ? -1 : conf.sstable_preemptive_open_interval_in_mb;
+        return FBUtilities.isWindows ? -1 : conf.sstable_preemptive_open_interval_in_mb;
     }
     public static void setSSTablePreempiveOpenIntervalInMB(int mb)
     {
@@ -2048,7 +2075,7 @@ public class DatabaseDescriptor
             case heap_buffers:
                 return new SlabPool(heapLimit, 0, conf.memtable_cleanup_threshold, new ColumnFamilyStore.FlushLargestColumnFamily());
             case offheap_buffers:
-                if (!FileUtils.isCleanerAvailable())
+                if (!FileUtils.isCleanerAvailable)
                 {
                     throw new IllegalStateException("Could not free direct byte buffer: offheap_buffers is not a safe memtable_allocation_type without this ability, please adjust your config. This feature is only guaranteed to work on an Oracle JVM. Refusing to start.");
                 }
@@ -2166,6 +2193,11 @@ public class DatabaseDescriptor
         conf.user_function_timeout_policy = userFunctionTimeoutPolicy;
     }
 
+    public static long getGCLogThreshold()
+    {
+        return conf.gc_log_threshold_in_ms;
+    }
+
     public static EncryptionContext getEncryptionContext()
     {
         return encryptionContext;
@@ -2210,6 +2242,6 @@ public class DatabaseDescriptor
 
     public static int searchConcurrencyFactor()
     {
-        return Integer.valueOf(System.getProperty("cassandra.search_concurrency_factor", "1"));
+        return Integer.parseInt(System.getProperty("cassandra.search_concurrency_factor", "1"));
     }
 }

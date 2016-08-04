@@ -18,16 +18,18 @@
 
 package org.apache.cassandra.io.sstable;
 
+import java.io.IOException;
 import java.util.Collection;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.db.ColumnFamilyStore;
-import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.SerializationHeader;
 import org.apache.cassandra.db.compaction.OperationType;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
 import org.apache.cassandra.db.rows.UnfilteredRowIterator;
 import org.apache.cassandra.index.Index;
+import org.apache.cassandra.io.sstable.format.RangeAwareSSTableWriter;
+import org.apache.cassandra.io.sstable.format.SSTableFormat;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.sstable.metadata.MetadataCollector;
 import org.apache.cassandra.utils.concurrent.Transactional;
@@ -99,6 +101,25 @@ public class SSTableTxnWriter extends Transactional.AbstractTransactional implem
     {
         LifecycleTransaction txn = LifecycleTransaction.offline(OperationType.WRITE);
         SSTableMultiWriter writer = cfs.createSSTableMultiWriter(descriptor, keyCount, repairedAt, sstableLevel, header, txn);
+        return new SSTableTxnWriter(txn, writer);
+    }
+
+
+    public static SSTableTxnWriter createRangeAware(ColumnFamilyStore cfs, long keyCount, long repairedAt, SSTableFormat.Type type, int sstableLevel, SerializationHeader header)
+    {
+        LifecycleTransaction txn = LifecycleTransaction.offline(OperationType.WRITE);
+        SSTableMultiWriter writer;
+        try
+        {
+            writer = new RangeAwareSSTableWriter(cfs, keyCount, repairedAt, type, sstableLevel, 0, txn, header);
+        }
+        catch (IOException e)
+        {
+            //We don't know the total size so this should never happen
+            //as we send in 0
+            throw new RuntimeException(e);
+        }
+
         return new SSTableTxnWriter(txn, writer);
     }
 

@@ -167,6 +167,14 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
 
     public static final Ordering<SSTableReader> sstableOrdering = Ordering.from(sstableComparator);
 
+    public static final Comparator<SSTableReader> sizeComparator = new Comparator<SSTableReader>()
+    {
+        public int compare(SSTableReader o1, SSTableReader o2)
+        {
+            return Longs.compare(o1.onDiskLength(), o2.onDiskLength());
+        }
+    };
+
     /**
      * maxDataAge is a timestamp in local server time (e.g. System.currentTimeMilli) which represents an upper bound
      * to the newest piece of data stored in the sstable. In other words, this sstable does not contain items created
@@ -445,8 +453,8 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
             long indexFileLength = new File(descriptor.filenameFor(Component.PRIMARY_INDEX)).length();
             int dataBufferSize = sstable.optimizationStrategy.bufferSize(statsMetadata.estimatedPartitionSize.percentile(DatabaseDescriptor.getDiskOptimizationEstimatePercentile()));
             int indexBufferSize = sstable.optimizationStrategy.bufferSize(indexFileLength / sstable.indexSummary.size());
-            sstable.ifile = ibuilder.bufferSize(sstable.optimizationStrategy.bufferSize(indexBufferSize)).complete();
-            sstable.dfile = dbuilder.bufferSize(sstable.optimizationStrategy.bufferSize(dataBufferSize)).complete();
+            sstable.ifile = ibuilder.bufferSize(indexBufferSize).complete();
+            sstable.dfile = dbuilder.bufferSize(dataBufferSize).complete();
             sstable.bf = FilterFactory.AlwaysPresent;
             sstable.setup(false);
             return sstable;
@@ -752,11 +760,11 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
                 builtSummary = true;
             }
 
-            long indexFileLength = new File(descriptor.filenameFor(Component.PRIMARY_INDEX)).length();
             int dataBufferSize = optimizationStrategy.bufferSize(sstableMetadata.estimatedPartitionSize.percentile(DatabaseDescriptor.getDiskOptimizationEstimatePercentile()));
 
             if (components.contains(Component.PRIMARY_INDEX))
             {
+                long indexFileLength = new File(descriptor.filenameFor(Component.PRIMARY_INDEX)).length();
                 int indexBufferSize = optimizationStrategy.bufferSize(indexFileLength / indexSummary.size());
                 ifile = ibuilder.bufferSize(indexBufferSize).complete();
             }
@@ -1529,6 +1537,8 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
     public abstract UnfilteredRowIterator iterator(DecoratedKey key, Slices slices, ColumnFilter selectedColumns, boolean reversed, boolean isForThrift);
     public abstract UnfilteredRowIterator iterator(FileDataInput file, DecoratedKey key, RowIndexEntry indexEntry, Slices slices, ColumnFilter selectedColumns, boolean reversed, boolean isForThrift);
 
+    public abstract UnfilteredRowIterator simpleIterator(FileDataInput file, DecoratedKey key, RowIndexEntry indexEntry, boolean tombstoneOnly);
+
     /**
      * Finds and returns the first key beyond a given token in this SSTable or null if no such key exists.
      */
@@ -2014,14 +2024,6 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
                 return cmp;
         }
         return 0;
-    }
-
-    public static class SizeComparator implements Comparator<SSTableReader>
-    {
-        public int compare(SSTableReader o1, SSTableReader o2)
-        {
-            return Longs.compare(o1.onDiskLength(), o2.onDiskLength());
-        }
     }
 
     public EncodingStats stats()

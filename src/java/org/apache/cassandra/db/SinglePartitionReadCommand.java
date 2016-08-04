@@ -54,7 +54,6 @@ import org.apache.cassandra.tracing.Tracing;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.SearchIterator;
 import org.apache.cassandra.utils.btree.BTreeSet;
-import org.apache.cassandra.utils.concurrent.OpOrder;
 
 
 /**
@@ -328,6 +327,20 @@ public class SinglePartitionReadCommand extends ReadCommand
                       limits,
                       partitionKey(),
                       lastReturned == null ? clusteringIndexFilter() : clusteringIndexFilter.forPaging(metadata().comparator, lastReturned, false));
+    }
+
+    public SinglePartitionReadCommand withUpdatedLimit(DataLimits newLimits)
+    {
+        return new SinglePartitionReadCommand(isDigestQuery(),
+                                              digestVersion(),
+                                              isForThrift(),
+                                              metadata(),
+                                              nowInSec(),
+                                              columnFilter(),
+                                              rowFilter(),
+                                              newLimits,
+                                              partitionKey,
+                                              clusteringIndexFilter);
     }
 
     public PartitionIterator execute(ConsistencyLevel consistency, ClientState clientState) throws RequestExecutionException
@@ -915,7 +928,7 @@ public class SinglePartitionReadCommand extends ReadCommand
 
     public MessageOut<ReadCommand> createMessage(int version)
     {
-        return new MessageOut<>(MessagingService.Verb.READ, this, version < MessagingService.VERSION_30 ? legacyReadCommandSerializer : serializer);
+        return new MessageOut<>(MessagingService.Verb.READ, this, readSerializer);
     }
 
     protected void appendCQLWhereClause(StringBuilder sb)

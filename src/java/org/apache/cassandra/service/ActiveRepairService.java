@@ -17,7 +17,6 @@
  */
 package org.apache.cassandra.service;
 
-import java.io.File;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
@@ -64,6 +63,7 @@ import org.apache.cassandra.repair.RepairParallelism;
 import org.apache.cassandra.repair.RepairSession;
 import org.apache.cassandra.repair.messages.*;
 import org.apache.cassandra.utils.CassandraVersion;
+import org.apache.cassandra.utils.Clock;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.UUIDGen;
 import org.apache.cassandra.utils.concurrent.Ref;
@@ -260,7 +260,7 @@ public class ActiveRepairService implements IEndpointStateChangeSubscriber, IFai
 
     public synchronized UUID prepareForRepair(UUID parentRepairSession, InetAddress coordinator, Set<InetAddress> endpoints, RepairOption options, List<ColumnFamilyStore> columnFamilyStores)
     {
-        long timestamp = System.currentTimeMillis();
+        long timestamp = Clock.instance.currentTimeMillis();
         registerParentRepairSession(parentRepairSession, coordinator, columnFamilyStores, options.getRanges(), options.isIncremental(), timestamp, options.isGlobal());
         final CountDownLatch prepareLatch = new CountDownLatch(endpoints.size());
         final AtomicBoolean status = new AtomicBoolean(true);
@@ -389,10 +389,11 @@ public class ActiveRepairService implements IEndpointStateChangeSubscriber, IFai
      */
     public synchronized ParentRepairSession removeParentRepairSession(UUID parentSessionId)
     {
+        String snapshotName = parentSessionId.toString();
         for (ColumnFamilyStore cfs : getParentRepairSession(parentSessionId).columnFamilyStores.values())
         {
-            if (cfs.snapshotExists(parentSessionId.toString()))
-                cfs.clearSnapshot(parentSessionId.toString());
+            if (cfs.snapshotExists(snapshotName))
+                cfs.clearSnapshot(snapshotName);
         }
         return parentRepairSessions.remove(parentSessionId);
     }

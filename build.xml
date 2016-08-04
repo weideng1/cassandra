@@ -427,7 +427,7 @@
           <dependency groupId="com.addthis.metrics" artifactId="reporter-config3" version="3.0.0" />
           <dependency groupId="org.mindrot" artifactId="jbcrypt" version="0.3m" />
           <dependency groupId="io.airlift" artifactId="airline" version="0.6" />
-          <dependency groupId="io.netty" artifactId="netty-all" version="4.0.36.Final" />
+          <dependency groupId="io.netty" artifactId="netty-all" version="4.0.39.Final" />
           <dependency groupId="com.google.code.findbugs" artifactId="jsr305" version="2.0.2" />
           <dependency groupId="com.clearspring.analytics" artifactId="stream" version="2.5.2" />
           <dependency groupId="com.datastax.cassandra" artifactId="cassandra-driver-core" version="3.0.1" classifier="shaded">
@@ -437,8 +437,8 @@
             <exclusion groupId="io.netty" artifactId="netty-transport"/>
           </dependency>
           <dependency groupId="org.eclipse.jdt.core.compiler" artifactId="ecj" version="4.4.2" />
-          <dependency groupId="org.caffinitas.ohc" artifactId="ohc-core" version="0.4.3" />
-          <dependency groupId="org.caffinitas.ohc" artifactId="ohc-core-j8" version="0.4.3" />
+          <dependency groupId="org.caffinitas.ohc" artifactId="ohc-core" version="0.4.4" />
+          <dependency groupId="org.caffinitas.ohc" artifactId="ohc-core-j8" version="0.4.4" />
           <dependency groupId="net.ju-n.compile-command-annotations" artifactId="compile-command-annotations" version="1.2.0" />
           <dependency groupId="org.fusesource" artifactId="sigar" version="1.6.4">
           	<exclusion groupId="log4j" artifactId="log4j"/>
@@ -500,8 +500,8 @@
           <exclusion groupId="io.netty" artifactId="netty-transport"/>
         </dependency>
         <dependency groupId="org.eclipse.jdt.core.compiler" artifactId="ecj"/>
-        <dependency groupId="org.caffinitas.ohc" artifactId="ohc-core" version="0.4.3" />
-        <dependency groupId="org.caffinitas.ohc" artifactId="ohc-core-j8" version="0.4.3" />
+        <dependency groupId="org.caffinitas.ohc" artifactId="ohc-core" version="0.4.4" />
+        <dependency groupId="org.caffinitas.ohc" artifactId="ohc-core-j8" version="0.4.4" />
         <dependency groupId="org.openjdk.jmh" artifactId="jmh-core"/>
         <dependency groupId="org.openjdk.jmh" artifactId="jmh-generator-annprocess"/>
         <dependency groupId="net.ju-n.compile-command-annotations" artifactId="compile-command-annotations"/>
@@ -722,6 +722,10 @@
         <fileset refid="test-dependency-sources"/>
         <mapper type="flatten"/>
       </copy>
+    </target>
+
+    <target name="echo-base-version">
+        <echo message="${base.version}" />
     </target>
 
     <!--

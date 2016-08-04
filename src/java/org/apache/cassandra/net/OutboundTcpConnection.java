@@ -40,6 +40,7 @@ import javax.net.ssl.SSLHandshakeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import io.netty.util.concurrent.FastThreadLocalThread;
 import net.jpountz.lz4.LZ4BlockOutputStream;
 import net.jpountz.lz4.LZ4Compressor;
 import net.jpountz.lz4.LZ4Factory;
@@ -63,7 +64,7 @@ import org.apache.cassandra.config.DatabaseDescriptor;
 
 import com.google.common.util.concurrent.Uninterruptibles;
 
-public class OutboundTcpConnection extends Thread
+public class OutboundTcpConnection extends FastThreadLocalThread
 {
     private static final Logger logger = LoggerFactory.getLogger(OutboundTcpConnection.class);
 
@@ -73,7 +74,7 @@ public class OutboundTcpConnection extends Thread
      * Enabled/disable TCP_NODELAY for intradc connections. Defaults to enabled.
      */
     private static final String INTRADC_TCP_NODELAY_PROPERTY = PREFIX + "otc_intradc_tcp_nodelay";
-    private static final boolean INTRADC_TCP_NODELAY = Boolean.valueOf(System.getProperty(INTRADC_TCP_NODELAY_PROPERTY, "true"));
+    private static final boolean INTRADC_TCP_NODELAY = Boolean.parseBoolean(System.getProperty(INTRADC_TCP_NODELAY_PROPERTY, "true"));
 
     /*
      * Size of buffer in output stream

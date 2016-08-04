@@ -150,6 +150,7 @@ public abstract class Message
     private int streamId;
     private Frame sourceFrame;
     private Map<String, ByteBuffer> customPayload;
+    protected Integer forcedProtocolVersion = null;
 
     protected Message(Type type)
     {
@@ -321,6 +322,8 @@ public abstract class Message
             int version = connection == null ? Server.CURRENT_VERSION : connection.getVersion();
 
             EnumSet<Frame.Header.Flag> flags = EnumSet.noneOf(Frame.Header.Flag.class);
+            if (version == Server.BETA_VERSION)
+                flags.add(Frame.Header.Flag.USE_BETA);
 
             Codec<Message> codec = (Codec<Message>)message.type.codec;
             try
@@ -389,7 +392,12 @@ public abstract class Message
                     throw e;
                 }
 
-                results.add(Frame.create(message.type, message.getStreamId(), version, flags, body));
+                // if the driver attempted to connect with a protocol version lower than the minimum supported
+                // version, respond with a protocol error message with the correct frame header for that version
+                int responseVersion = message.forcedProtocolVersion == null
+                                    ? version
+                                    : message.forcedProtocolVersion;
+                results.add(Frame.create(message.type, message.getStreamId(), responseVersion, flags, body));
             }
             catch (Throwable e)
             {

@@ -27,7 +27,6 @@ import com.google.common.util.concurrent.RateLimiter;
 
 import org.apache.cassandra.db.Directories;
 import org.apache.cassandra.db.SerializationHeader;
-import org.apache.cassandra.db.lifecycle.SSTableSet;
 import org.apache.cassandra.index.Index;
 import org.apache.cassandra.io.sstable.Descriptor;
 import org.apache.cassandra.io.sstable.SSTableMultiWriter;
@@ -45,6 +44,7 @@ import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.sstable.Component;
 import org.apache.cassandra.io.sstable.ISSTableScanner;
 import org.apache.cassandra.io.sstable.metadata.MetadataCollector;
+import org.apache.cassandra.schema.CompactionParams;
 import org.apache.cassandra.utils.JVMStabilityInspector;
 
 /**
@@ -126,7 +126,7 @@ public abstract class AbstractCompactionStrategy
             uncheckedTombstoneCompaction = DEFAULT_UNCHECKED_TOMBSTONE_COMPACTION_OPTION;
         }
 
-        directories = new Directories(cfs.metadata, Directories.dataDirectories);
+        directories = cfs.getDirectories();
     }
 
     public Directories getDirectories()
@@ -493,6 +493,7 @@ public abstract class AbstractCompactionStrategy
         uncheckedOptions.remove(LOG_ALL_OPTION);
         uncheckedOptions.remove(COMPACTION_ENABLED);
         uncheckedOptions.remove(ONLY_PURGE_REPAIRED_TOMBSTONES);
+        uncheckedOptions.remove(CompactionParams.Option.PROVIDE_OVERLAPPING_TOMBSTONES.toString());
         return uncheckedOptions;
     }
 

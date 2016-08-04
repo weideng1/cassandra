@@ -31,7 +31,6 @@ import org.junit.AfterClass;
 import org.junit.BeforeClass;
 
 import org.apache.cassandra.SchemaLoader;
-import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.ColumnFamilyStore;
@@ -65,7 +64,7 @@ public class SSTableWriterTestBase extends SchemaLoader
     @BeforeClass
     public static void defineSchema() throws ConfigurationException
     {
-        if (FBUtilities.isWindows())
+        if (FBUtilities.isWindows)
         {
             standardMode = DatabaseDescriptor.getDiskAccessMode();
             indexMode = DatabaseDescriptor.getIndexAccessMode();
@@ -111,6 +110,25 @@ public class SSTableWriterTestBase extends SchemaLoader
         validateCFS(cfs);
     }
 
+    /**
+     * Validate the column family store by checking that all live
+     * sstables are referenced only once and are not marked as
+     * compacting. It also checks that the generation of the data
+     * files on disk is the same as that of the live sstables,
+     * to ensure that the data files on disk belong to the live
+     * sstables. Finally, it checks that the metrics contain the
+     * correct disk space used, live and total.
+     *
+     * Note that this method will submit a maximal compaction task
+     * if there are live sstables, in order to check that there is at least
+     * a maximal task when there are live sstables.
+     *
+     * This method has therefore side effects and should be called after
+     * performing any other checks on previous operations, especially
+     * checks involving files on disk.
+     *
+     * @param cfs - the column family store to validate
+     */
     public static void validateCFS(ColumnFamilyStore cfs)
     {
         Set<Integer> liveDescriptors = new HashSet<>();
@@ -136,6 +154,7 @@ public class SSTableWriterTestBase extends SchemaLoader
         assertEquals(spaceUsed, cfs.metric.liveDiskSpaceUsed.getCount());
         assertEquals(spaceUsed, cfs.metric.totalDiskSpaceUsed.getCount());
         assertTrue(cfs.getTracker().getCompacting().isEmpty());
+
         if(cfs.getLiveSSTables().size() > 0)
             assertFalse(CompactionManager.instance.submitMaximal(cfs, cfs.gcBefore((int) (System.currentTimeMillis() / 1000)), false).isEmpty());
     }

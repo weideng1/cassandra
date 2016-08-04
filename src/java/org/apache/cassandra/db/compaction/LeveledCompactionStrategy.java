@@ -37,7 +37,6 @@ import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.sstable.ISSTableScanner;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
-import org.apache.cassandra.utils.FBUtilities;
 import org.codehaus.jackson.JsonNode;
 import org.codehaus.jackson.node.JsonNodeFactory;
 import org.codehaus.jackson.node.ObjectNode;
@@ -146,7 +145,17 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy
     @Override
     public AbstractCompactionTask getUserDefinedTask(Collection<SSTableReader> sstables, int gcBefore)
     {
-        throw new UnsupportedOperationException("LevelDB compaction strategy does not allow user-specified compactions");
+        if (sstables.size() != 1)
+            throw new UnsupportedOperationException("LevelDB compaction strategy does not allow user-specified compactions");
+
+        LifecycleTransaction transaction = cfs.getTracker().tryModify(sstables, OperationType.COMPACTION);
+        if (transaction == null)
+        {
+            logger.trace("Unable to mark {} for compaction; probably a background compaction got to it first.  You can disable background compactions temporarily if this is a problem", sstables);
+            return null;
+        }
+        int level = sstables.iterator().next().getSSTableLevel();
+        return getCompactionTask(transaction, gcBefore, level == 0 ? Integer.MAX_VALUE : getMaxSSTableBytes());
     }
 
     @Override
@@ -180,11 +189,13 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy
         for (SSTableReader sstable : ssTablesToGroup)
         {
             Integer level = sstable.getSSTableLevel();
-            if (!sstablesByLevel.containsKey(level))
+            Collection<SSTableReader> sstablesForLevel = sstablesByLevel.get(level);
+            if (sstablesForLevel == null)
             {
-                sstablesByLevel.put(level, new ArrayList<SSTableReader>());
+                sstablesForLevel = new ArrayList<SSTableReader>();
+                sstablesByLevel.put(level, sstablesForLevel);
             }
-            sstablesByLevel.get(level).add(sstable);
+            sstablesForLevel.add(sstable);
         }
 
         Collection<Collection<SSTableReader>> groupedSSTables = new ArrayList<>();

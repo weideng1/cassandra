@@ -17,8 +17,6 @@
  */
 package org.apache.cassandra.db;
 
-import static com.google.common.collect.Sets.newHashSet;
-
 import java.io.File;
 import java.io.FileFilter;
 import java.io.IOError;
@@ -182,6 +180,12 @@ public class Directories
     {
         this(metadata, dataDirectories);
     }
+
+    public Directories(final CFMetaData metadata, Collection<DataDirectory> paths)
+    {
+        this(metadata, paths.toArray(new DataDirectory[paths.size()]));
+    }
+
     /**
      * Create Directories of given ColumnFamily.
      * SSTable directories are created under data_directories defined in cassandra.yaml if not exist at this time.
@@ -508,6 +512,12 @@ public class Directories
         return new File(snapshotDir, "manifest.json");
     }
 
+    public File getSnapshotSchemaFile(String snapshotName)
+    {
+        File snapshotDir = getSnapshotDirectory(getDirectoryForNewSSTables(), snapshotName);
+        return new File(snapshotDir, "schema.cql");
+    }
+
     public File getNewEphemeralSnapshotMarkerFile(String snapshotName)
     {
         File snapshotDir = new File(getWriteableLocationAsFile(1L), join(SNAPSHOT_SUBDIR, snapshotName));
@@ -547,7 +557,8 @@ public class Directories
 
         public long getAvailableSpace()
         {
-            return location.getUsableSpace();
+            long availableSpace = location.getUsableSpace() - DatabaseDescriptor.getMinFreeSpacePerDriveInBytes();
+            return availableSpace > 0 ? availableSpace : 0;
         }
 
         @Override
@@ -878,7 +889,7 @@ public class Directories
                 }
                 catch (FSWriteError e)
                 {
-                    if (FBUtilities.isWindows())
+                    if (FBUtilities.isWindows)
                         SnapshotDeletingTask.addFailedSnapshot(snapshotDir);
                     else
                         throw e;
@@ -915,12 +926,25 @@ public class Directories
         return result;
     }
 
+    /**
+     * @return Raw size on disk for all directories
+     */
+    public long getRawDiretoriesSize()
+    {
+        long totalAllocatedSize = 0L;
+
+        for (File path : dataPaths)
+            totalAllocatedSize += FileUtils.folderSize(path);
+
+        return totalAllocatedSize;
+    }
+
     public long getTrueAllocatedSizeIn(File input)
     {
         if (!input.isDirectory())
             return 0;
 
-        SSTableSizeSummer visitor = new SSTableSizeSummer(sstableLister(Directories.OnTxnErr.THROW).listFiles());
+        SSTableSizeSummer visitor = new SSTableSizeSummer(input, sstableLister(Directories.OnTxnErr.THROW).listFiles());
         try
         {
             Files.walkFileTree(input.toPath(), visitor);
@@ -1006,21 +1030,22 @@ public class Directories
     
     private class SSTableSizeSummer extends DirectorySizeCalculator
     {
-        SSTableSizeSummer(List<File> files)
+        private final HashSet<File> toSkip;
+        SSTableSizeSummer(File path, List<File> files)
         {
-            super(files);
+            super(path);
+            toSkip = new HashSet<>(files);
         }
 
         @Override
-        public boolean isAcceptable(Path file)
+        public boolean isAcceptable(Path path)
         {
-            String fileName = file.toFile().getName();
-            Pair<Descriptor, Component> pair = SSTable.tryComponentFromFilename(file.getParent().toFile(), fileName);
+            File file = path.toFile();
+            Pair<Descriptor, Component> pair = SSTable.tryComponentFromFilename(path.getParent().toFile(), file.getName());
             return pair != null
                     && pair.left.ksname.equals(metadata.ksName)
                     && pair.left.cfname.equals(metadata.cfName)
-                    && !visited.contains(fileName)
-                    && !alive.contains(fileName);
+                    && !toSkip.contains(file);
         }
     }
 }

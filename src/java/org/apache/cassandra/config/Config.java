@@ -113,7 +113,7 @@ public class Config
     @Deprecated
     public Integer concurrent_replicates = null;
 
-    public Integer memtable_flush_writers = 1;
+    public Integer memtable_flush_writers = null;
     public Integer memtable_heap_space_in_mb;
     public Integer memtable_offheap_space_in_mb;
     public Float memtable_cleanup_threshold = null;
@@ -175,6 +175,7 @@ public class Config
     public Integer concurrent_compactors;
     public volatile Integer compaction_throughput_mb_per_sec = 16;
     public volatile Integer compaction_large_partition_warning_threshold_mb = 100;
+    public Integer min_free_space_per_drive_in_mb = 50;
 
     public Integer max_streaming_retries = 3;
 
@@ -209,9 +210,9 @@ public class Config
 
     public String endpoint_snitch;
     public Boolean dynamic_snitch = true;
-    public Integer dynamic_snitch_update_interval_in_ms = 100;
-    public Integer dynamic_snitch_reset_interval_in_ms = 600000;
-    public Double dynamic_snitch_badness_threshold = 0.1;
+    public volatile Integer dynamic_snitch_update_interval_in_ms = 100;
+    public volatile Integer dynamic_snitch_reset_interval_in_ms = 600000;
+    public volatile Double dynamic_snitch_badness_threshold = 0.1;
 
     public String request_scheduler;
     public RequestSchedulerId request_scheduler_id;
@@ -276,6 +277,7 @@ public class Config
     public volatile Long index_summary_capacity_in_mb;
     public volatile int index_summary_resize_interval_in_minutes = 60;
 
+    public int gc_log_threshold_in_ms = 200;
     public int gc_warn_threshold_in_ms = 0;
 
     // TTL for different types of trace events.

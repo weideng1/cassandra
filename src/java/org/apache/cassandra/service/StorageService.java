@@ -75,6 +75,7 @@ import org.apache.cassandra.metrics.StorageMetrics;
 import org.apache.cassandra.net.*;
 import org.apache.cassandra.repair.*;
 import org.apache.cassandra.repair.messages.RepairOption;
+import org.apache.cassandra.schema.CompactionParams.TombstoneOption;
 import org.apache.cassandra.schema.KeyspaceMetadata;
 import org.apache.cassandra.service.paxos.CommitVerbHandler;
 import org.apache.cassandra.service.paxos.PrepareVerbHandler;
@@ -189,15 +190,13 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
     private final List<IEndpointLifecycleSubscriber> lifecycleSubscribers = new CopyOnWriteArrayList<>();
 
-    private static final BackgroundActivityMonitor bgMonitor = new BackgroundActivityMonitor();
-
     private final ObjectName jmxObjectName;
 
     private Collection<Token> bootstrapTokens = null;
 
     // true when keeping strict consistency while bootstrapping
-    private boolean useStrictConsistency = Boolean.parseBoolean(System.getProperty("cassandra.consistent.rangemovement", "true"));
-    private static final boolean allowSimultaneousMoves = Boolean.valueOf(System.getProperty("cassandra.consistent.simultaneousmoves.allow","false"));
+    private static final boolean useStrictConsistency = Boolean.parseBoolean(System.getProperty("cassandra.consistent.rangemovement", "true"));
+    private static final boolean allowSimultaneousMoves = Boolean.parseBoolean(System.getProperty("cassandra.consistent.simultaneousmoves.allow","false"));
     private boolean replacing;
 
     private final StreamStateStore streamStateStore = new StreamStateStore();
@@ -621,7 +620,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
                 CommitLog.instance.shutdownBlocking();
 
-                if (FBUtilities.isWindows())
+                if (FBUtilities.isWindows)
                     WindowsTimer.endTimerPeriod(DatabaseDescriptor.getWindowsTimerInterval());
 
                 HintsService.instance.shutdownBlocking();
@@ -712,7 +711,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         if (drainOnShutdown != null)
             Runtime.getRuntime().removeShutdownHook(drainOnShutdown);
 
-        if (FBUtilities.isWindows())
+        if (FBUtilities.isWindows)
             WindowsTimer.endTimerPeriod(DatabaseDescriptor.getWindowsTimerInterval());
     }
 
@@ -1130,7 +1129,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
                                                        null,
                                                        FBUtilities.getBroadcastAddress(),
                                                        "Rebuild",
-                                                       !replacing && useStrictConsistency,
+                                                       useStrictConsistency && !replacing,
                                                        DatabaseDescriptor.getEndpointSnitch(),
                                                        streamStateStore,
                                                        false);
@@ -1377,7 +1376,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         setMode(Mode.JOINING, "Starting to bootstrap...", true);
         BootStrapper bootstrapper = new BootStrapper(FBUtilities.getBroadcastAddress(), tokens, tokenMetadata);
         bootstrapper.addProgressListener(progressSupport);
-        ListenableFuture<StreamState> bootstrapStream = bootstrapper.bootstrap(streamStateStore, !replacing && useStrictConsistency); // handles token update
+        ListenableFuture<StreamState> bootstrapStream = bootstrapper.bootstrap(streamStateStore, useStrictConsistency && !replacing); // handles token update
         Futures.addCallback(bootstrapStream, new FutureCallback<StreamState>()
         {
             @Override
@@ -1416,7 +1415,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             // already bootstrapped ranges are filtered during bootstrap
             BootStrapper bootstrapper = new BootStrapper(FBUtilities.getBroadcastAddress(), tokens, tokenMetadata);
             bootstrapper.addProgressListener(progressSupport);
-            ListenableFuture<StreamState> bootstrapStream = bootstrapper.bootstrap(streamStateStore, !replacing && useStrictConsistency); // handles token update
+            ListenableFuture<StreamState> bootstrapStream = bootstrapper.bootstrap(streamStateStore, useStrictConsistency && !replacing); // handles token update
             Futures.addCallback(bootstrapStream, new FutureCallback<StreamState>()
             {
                 @Override
@@ -1465,24 +1464,6 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
     public TokenMetadata getTokenMetadata()
     {
         return tokenMetadata;
-    }
-
-    /**
-     * Increment about the known Compaction severity of the events in this node
-     */
-    public void reportSeverity(double incr)
-    {
-        bgMonitor.incrCompactionSeverity(incr);
-    }
-
-    public void reportManualSeverity(double incr)
-    {
-        bgMonitor.incrManualSeverity(incr);
-    }
-
-    public double getSeverity(InetAddress endpoint)
-    {
-        return bgMonitor.getSeverity(endpoint);
     }
 
     /**
@@ -1895,7 +1876,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
     {
         try
         {
-            MessagingService.instance().setVersion(endpoint, Integer.valueOf(value.value));
+            MessagingService.instance().setVersion(endpoint, Integer.parseInt(value.value));
         }
         catch (NumberFormatException e)
         {
@@ -2829,6 +2810,19 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         return status.statusCode;
     }
 
+    public int garbageCollect(String tombstoneOptionString, int jobs, String keyspaceName, String ... columnFamilies) throws IOException, ExecutionException, InterruptedException
+    {
+        TombstoneOption tombstoneOption = TombstoneOption.valueOf(tombstoneOptionString);
+        CompactionManager.AllSSTableOpStatus status = CompactionManager.AllSSTableOpStatus.SUCCESSFUL;
+        for (ColumnFamilyStore cfs : getValidColumnFamilies(false, false, keyspaceName, columnFamilies))
+        {
+            CompactionManager.AllSSTableOpStatus oneStatus = cfs.garbageCollect(tombstoneOption, jobs);
+            if (oneStatus != CompactionManager.AllSSTableOpStatus.SUCCESSFUL)
+                status = oneStatus;
+        }
+        return status.statusCode;
+    }
+
     /**
      * Takes the snapshot of a multiple column family from different keyspaces. A snapshot name must be specified.
      *
@@ -3161,7 +3155,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             throw new IllegalArgumentException("Invalid parallelism degree specified: " + parallelismDegree);
         }
         RepairParallelism parallelism = RepairParallelism.values()[parallelismDegree];
-        if (FBUtilities.isWindows() && parallelism != RepairParallelism.PARALLEL)
+        if (FBUtilities.isWindows && parallelism != RepairParallelism.PARALLEL)
         {
             logger.warn("Snapshot-based repair is not yet supported on Windows.  Reverting to parallel repair.");
             parallelism = RepairParallelism.PARALLEL;
@@ -3247,7 +3241,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             throw new IllegalArgumentException("Invalid parallelism degree specified: " + parallelismDegree);
         }
         RepairParallelism parallelism = RepairParallelism.values()[parallelismDegree];
-        if (FBUtilities.isWindows() && parallelism != RepairParallelism.PARALLEL)
+        if (FBUtilities.isWindows && parallelism != RepairParallelism.PARALLEL)
         {
             logger.warn("Snapshot-based repair is not yet supported on Windows.  Reverting to parallel repair.");
             parallelism = RepairParallelism.PARALLEL;
@@ -4440,37 +4434,88 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         return Collections.unmodifiableMap(result);
     }
 
+    public void setDynamicUpdateInterval(int dynamicUpdateInterval)
+    {
+        if (DatabaseDescriptor.getEndpointSnitch() instanceof DynamicEndpointSnitch)
+        {
+
+            try
+            {
+                updateSnitch(null, true, dynamicUpdateInterval, null, null);
+            }
+            catch (ClassNotFoundException e)
+            {
+                throw new RuntimeException(e);
+            }
+        }
+    }
+
+    public int getDynamicUpdateInterval()
+    {
+        return DatabaseDescriptor.getDynamicUpdateInterval();
+    }
+
     public void updateSnitch(String epSnitchClassName, Boolean dynamic, Integer dynamicUpdateInterval, Integer dynamicResetInterval, Double dynamicBadnessThreshold) throws ClassNotFoundException
     {
+        // apply dynamic snitch configuration
+        if (dynamicUpdateInterval != null)
+            DatabaseDescriptor.setDynamicUpdateInterval(dynamicUpdateInterval);
+        if (dynamicResetInterval != null)
+            DatabaseDescriptor.setDynamicResetInterval(dynamicResetInterval);
+        if (dynamicBadnessThreshold != null)
+            DatabaseDescriptor.setDynamicBadnessThreshold(dynamicBadnessThreshold);
+
         IEndpointSnitch oldSnitch = DatabaseDescriptor.getEndpointSnitch();
 
         // new snitch registers mbean during construction
-        IEndpointSnitch newSnitch;
-        try
+        if(epSnitchClassName != null)
         {
-            newSnitch = FBUtilities.construct(epSnitchClassName, "snitch");
-        }
-        catch (ConfigurationException e)
-        {
-            throw new ClassNotFoundException(e.getMessage());
-        }
-        if (dynamic)
-        {
-            DatabaseDescriptor.setDynamicUpdateInterval(dynamicUpdateInterval);
-            DatabaseDescriptor.setDynamicResetInterval(dynamicResetInterval);
-            DatabaseDescriptor.setDynamicBadnessThreshold(dynamicBadnessThreshold);
-            newSnitch = new DynamicEndpointSnitch(newSnitch);
-        }
 
-        // point snitch references to the new instance
-        DatabaseDescriptor.setEndpointSnitch(newSnitch);
-        for (String ks : Schema.instance.getKeyspaces())
-        {
-            Keyspace.open(ks).getReplicationStrategy().snitch = newSnitch;
-        }
+            // need to unregister the mbean _before_ the new dynamic snitch is instantiated (and implicitly initialized
+            // and its mbean registered)
+            if (oldSnitch instanceof DynamicEndpointSnitch)
+                ((DynamicEndpointSnitch)oldSnitch).close();
 
-        if (oldSnitch instanceof DynamicEndpointSnitch)
-            ((DynamicEndpointSnitch)oldSnitch).unregisterMBean();
+            IEndpointSnitch newSnitch;
+            try
+            {
+                newSnitch = DatabaseDescriptor.createEndpointSnitch(dynamic != null && dynamic, epSnitchClassName);
+            }
+            catch (ConfigurationException e)
+            {
+                throw new ClassNotFoundException(e.getMessage());
+            }
+
+            if (newSnitch instanceof DynamicEndpointSnitch)
+            {
+                logger.info("Created new dynamic snitch {} with update-interval={}, reset-interval={}, badness-threshold={}",
+                            ((DynamicEndpointSnitch)newSnitch).subsnitch.getClass().getName(), DatabaseDescriptor.getDynamicUpdateInterval(),
+                            DatabaseDescriptor.getDynamicResetInterval(), DatabaseDescriptor.getDynamicBadnessThreshold());
+            }
+            else
+            {
+                logger.info("Created new non-dynamic snitch {}", newSnitch.getClass().getName());
+            }
+
+            // point snitch references to the new instance
+            DatabaseDescriptor.setEndpointSnitch(newSnitch);
+            for (String ks : Schema.instance.getKeyspaces())
+            {
+                Keyspace.open(ks).getReplicationStrategy().snitch = newSnitch;
+            }
+        }
+        else
+        {
+            if (oldSnitch instanceof DynamicEndpointSnitch)
+            {
+                logger.info("Applying config change to dynamic snitch {} with update-interval={}, reset-interval={}, badness-threshold={}",
+                            ((DynamicEndpointSnitch)oldSnitch).subsnitch.getClass().getName(), DatabaseDescriptor.getDynamicUpdateInterval(),
+                            DatabaseDescriptor.getDynamicResetInterval(), DatabaseDescriptor.getDynamicBadnessThreshold());
+
+                DynamicEndpointSnitch snitch = (DynamicEndpointSnitch)oldSnitch;
+                snitch.applyConfigChanges();
+            }
+        }
 
         updateTopology();
     }

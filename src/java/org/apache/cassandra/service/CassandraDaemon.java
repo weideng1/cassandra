@@ -48,6 +48,7 @@ import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.cql3.functions.ThreadAwareSecurityManager;
+import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.commitlog.CommitLog;
 import org.apache.cassandra.exceptions.ConfigurationException;
@@ -137,7 +138,6 @@ public class CassandraDaemon
             jmxServer = JMXServerUtils.createJMXServer(Integer.parseInt(jmxPort), localOnly);
             if (jmxServer == null)
                 return;
-            jmxServer.start();
         }
         catch (IOException e)
         {
@@ -175,7 +175,7 @@ public class CassandraDaemon
         FileUtils.setFSErrorHandler(new DefaultFSErrorHandler());
 
         // Delete any failed snapshot deletions on Windows - see CASSANDRA-9658
-        if (FBUtilities.isWindows())
+        if (FBUtilities.isWindows)
             WindowsFailedSnapshotTracker.deleteOldSnapshots();
 
         ThreadAwareSecurityManager.install();
@@ -344,6 +344,9 @@ public class CassandraDaemon
 
         SystemKeyspace.finishStartup();
 
+        // Prepared statements
+        QueryProcessor.preloadPreparedStatement();
+
         // Metrics
         String metricsReporterConfigFile = System.getProperty("cassandra.metricsReporterConfigFile");
         if (metricsReporterConfigFile != null)
@@ -384,6 +387,7 @@ public class CassandraDaemon
             {
                 keyspace.viewManager.buildAllViews();
             }
+            logger.debug("Completed submission of build tasks for any materialized views defined at startup");
         };
 
         ScheduledExecutors.optionalTasks.schedule(viewRebuild, StorageService.RING_DELAY, TimeUnit.MILLISECONDS);
@@ -525,7 +529,7 @@ public class CassandraDaemon
         
         // On windows, we need to stop the entire system as prunsrv doesn't have the jsvc hooks
         // We rely on the shutdown hook to drain the node
-        if (FBUtilities.isWindows())
+        if (FBUtilities.isWindows)
             System.exit(0);
 
         if (jmxServer != null)
@@ -577,7 +581,7 @@ public class CassandraDaemon
                 //Allow the server to start even if the bean can't be registered
             }
 
-            if (FBUtilities.isWindows())
+            if (FBUtilities.isWindows)
             {
                 // We need to adjust the system timer on windows from the default 15ms down to the minimum of 1ms as this
                 // impacts timer intervals, thread scheduling, driver interrupts, etc.

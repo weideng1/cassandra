@@ -72,7 +72,7 @@ implements BaseRowIterator<R>
 
     public Row staticRow()
     {
-        return staticRow;
+        return staticRow == null ? Rows.EMPTY_STATIC_ROW : staticRow;
     }
 
 
@@ -105,7 +105,8 @@ implements BaseRowIterator<R>
         super.add(transformation);
 
         // transform any existing data
-        staticRow = transformation.applyToStatic(staticRow);
+        if (staticRow != null)
+            staticRow = transformation.applyToStatic(staticRow);
         next = applyOne(next, transformation);
         partitionKey = transformation.applyToPartitionKey(partitionKey);
     }

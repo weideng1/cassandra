@@ -34,11 +34,7 @@ import org.apache.cassandra.io.sstable.format.SSTableWriter;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.io.util.RandomAccessReader;
 import org.apache.cassandra.service.ActiveRepairService;
-import org.apache.cassandra.utils.ByteBufferUtil;
-import org.apache.cassandra.utils.FBUtilities;
-import org.apache.cassandra.utils.JVMStabilityInspector;
-import org.apache.cassandra.utils.OutputHandler;
-import org.apache.cassandra.utils.UUIDGen;
+import org.apache.cassandra.utils.*;
 
 public class Scrubber implements Closeable
 {
@@ -214,7 +210,8 @@ public class Scrubber implements Closeable
                     if (indexFile != null && dataStart != dataStartFromIndex)
                         outputHandler.warn(String.format("Data file row position %d differs from index file row position %d", dataStart, dataStartFromIndex));
 
-                    try (UnfilteredRowIterator iterator = withValidation(new SSTableIdentityIterator(sstable, dataFile, key), dataFile.getPath()))
+                    try (UnfilteredRowIterator iterator = withValidation(new RowMergingSSTableIterator(SSTableIdentityIterator.create(sstable, dataFile, key)),
+                                                                         dataFile.getPath()))
                     {
                         if (prevKey != null && prevKey.compareTo(key) > 0)
                         {
@@ -245,7 +242,7 @@ public class Scrubber implements Closeable
                         {
                             dataFile.seek(dataStartFromIndex);
 
-                            try (UnfilteredRowIterator iterator = withValidation(new SSTableIdentityIterator(sstable, dataFile, key), dataFile.getPath()))
+                            try (UnfilteredRowIterator iterator = withValidation(SSTableIdentityIterator.create(sstable, dataFile, key), dataFile.getPath()))
                             {
                                 if (prevKey != null && prevKey.compareTo(key) > 0)
                                 {
@@ -466,6 +463,53 @@ public class Scrubber implements Closeable
             this.goodRows = scrubber.goodRows;
             this.badRows = scrubber.badRows;
             this.emptyRows = scrubber.emptyRows;
+        }
+    }
+
+    /**
+     * During 2.x migration, under some circumstances rows might have gotten duplicated.
+     * Merging iterator merges rows with same clustering.
+     *
+     * For more details, refer to CASSANDRA-12144.
+     */
+    private static class RowMergingSSTableIterator extends WrappingUnfilteredRowIterator
+    {
+        Unfiltered nextToOffer = null;
+
+        RowMergingSSTableIterator(UnfilteredRowIterator source)
+        {
+            super(source);
+        }
+
+        @Override
+        public boolean hasNext()
+        {
+            return nextToOffer != null || wrapped.hasNext();
+        }
+
+        @Override
+        public Unfiltered next()
+        {
+            Unfiltered next = nextToOffer != null ? nextToOffer : wrapped.next();
+
+            if (next.isRow())
+            {
+                while (wrapped.hasNext())
+                {
+                    Unfiltered peek = wrapped.next();
+                    if (!peek.isRow() || !next.clustering().equals(peek.clustering()))
+                    {
+                        nextToOffer = peek; // Offer peek in next call
+                        return next;
+                    }
+    
+                    // Duplicate row, merge it.
+                    next = Rows.merge((Row) next, (Row) peek, FBUtilities.nowInSeconds());
+                }
+            }
+
+            nextToOffer = null;
+            return next;
         }
     }
 }

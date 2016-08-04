@@ -71,6 +71,7 @@ import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.metrics.TableMetrics;
 import org.apache.cassandra.metrics.TableMetrics.Sampler;
 import org.apache.cassandra.schema.*;
+import org.apache.cassandra.schema.CompactionParams.TombstoneOption;
 import org.apache.cassandra.service.CacheService;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.*;
@@ -186,6 +187,9 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     private static final String SAMPLING_RESULTS_NAME = "SAMPLING_RESULTS";
     private static final CompositeType SAMPLING_RESULT;
 
+    public static final String SNAPSHOT_TRUNCATE_PREFIX = "truncated";
+    public static final String SNAPSHOT_DROP_PREFIX = "dropped";
+
     static
     {
         try
@@ -244,6 +248,8 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     public final TableMetrics metric;
     public volatile long sampleLatencyNanos;
     private final ScheduledFuture<?> latencyCalculator;
+
+    private volatile boolean compactionSpaceCheck = true;
 
     public static void shutdownPostFlushExecutor() throws InterruptedException
     {
@@ -375,17 +381,6 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         }
     }
 
-    private ColumnFamilyStore(Keyspace keyspace,
-                             String columnFamilyName,
-                             int generation,
-                             CFMetaData metadata,
-                             Directories directories,
-                             boolean loadSSTables)
-    {
-        this(keyspace, columnFamilyName, generation, metadata, directories, loadSSTables, true);
-    }
-
-
     @VisibleForTesting
     public ColumnFamilyStore(Keyspace keyspace,
                               String columnFamilyName,
@@ -393,7 +388,8 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                               CFMetaData metadata,
                               Directories directories,
                               boolean loadSSTables,
-                              boolean registerBookkeeping)
+                              boolean registerBookeeping,
+                              boolean offline)
     {
         assert directories != null;
         assert metadata != null : "null metadata for " + keyspace + ":" + columnFamilyName;
@@ -422,8 +418,20 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             data.addInitialSSTables(sstables);
         }
 
+        /**
+         * When creating a CFS offline we change the default logic needed by CASSANDRA-8671
+         * and link the passed directories to be picked up by the compaction strategy
+         */
+        if (offline)
+            this.directories = directories;
+        else
+            this.directories = new Directories(metadata, Directories.dataDirectories);
+
+
         // compaction strategy should be created after the CFS has been prepared
         compactionStrategyManager = new CompactionStrategyManager(this);
+
+        // Since compaction can re-define data dir we need to reinit directories
         this.directories = compactionStrategyManager.getDirectories();
 
         if (maxCompactionThreshold.value() <= 0 || minCompactionThreshold.value() <=0)
@@ -436,7 +444,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         for (IndexMetadata info : metadata.getIndexes())
             indexManager.addIndex(info);
 
-        if (registerBookkeeping)
+        if (registerBookeeping)
         {
             // register the mbean
             mbeanName = String.format("org.apache.cassandra.db:type=%s,keyspace=%s,table=%s",
@@ -490,10 +498,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
     public Directories getDirectories()
     {
-        // todo, hack since we need to know the data directories when constructing the compaction strategy
-        if (directories != null)
-            return directories;
-        return new Directories(metadata, initialDirectories);
+        return directories;
     }
 
     public SSTableMultiWriter createSSTableMultiWriter(Descriptor descriptor, long keyCount, long repairedAt, int sstableLevel, SerializationHeader header, LifecycleTransaction txn)
@@ -582,8 +587,20 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                                                                          CFMetaData metadata,
                                                                          boolean loadSSTables)
     {
-        // get the max generation number, to prevent generation conflicts
         Directories directories = new Directories(metadata, initialDirectories);
+        return createColumnFamilyStore(keyspace, columnFamily, metadata, directories, loadSSTables, true, false);
+    }
+
+    /** This is only directly used by offline tools */
+    public static synchronized ColumnFamilyStore createColumnFamilyStore(Keyspace keyspace,
+                                                                         String columnFamily,
+                                                                         CFMetaData metadata,
+                                                                         Directories directories,
+                                                                         boolean loadSSTables,
+                                                                         boolean registerBookkeeping,
+                                                                         boolean offline)
+    {
+        // get the max generation number, to prevent generation conflicts
         Directories.SSTableLister lister = directories.sstableLister(Directories.OnTxnErr.IGNORE).includeBackups(true);
         List<Integer> generations = new ArrayList<Integer>();
         for (Map.Entry<Descriptor, Set<Component>> entry : lister.list().entrySet())
@@ -592,21 +609,22 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             generations.add(desc.generation);
             if (!desc.isCompatible())
                 throw new RuntimeException(String.format("Incompatible SSTable found. Current version %s is unable to read file: %s. Please run upgradesstables.",
-                        desc.getFormat().getLatestVersion(), desc));
+                                                         desc.getFormat().getLatestVersion(), desc));
         }
         Collections.sort(generations);
         int value = (generations.size() > 0) ? (generations.get(generations.size() - 1)) : 0;
 
-        return new ColumnFamilyStore(keyspace, columnFamily, value, metadata, directories, loadSSTables);
+        return new ColumnFamilyStore(keyspace, columnFamily, value, metadata, directories, loadSSTables, registerBookkeeping, offline);
     }
 
     /**
      * Removes unnecessary files from the cf directory at startup: these include temp files, orphans, zero-length files
      * and compacted sstables. Files that cannot be recognized will be ignored.
      */
-    public static void scrubDataDirectories(CFMetaData metadata) throws StartupException
+    public static void  scrubDataDirectories(CFMetaData metadata) throws StartupException
     {
         Directories directories = new Directories(metadata, initialDirectories);
+        Set<File> cleanedDirectories = new HashSet<>();
 
          // clear ephemeral snapshots that were not properly cleared last session (CASSANDRA-7357)
         clearEphemeralSnapshots(directories);
@@ -625,10 +643,15 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         for (Map.Entry<Descriptor,Set<Component>> sstableFiles : directories.sstableLister(Directories.OnTxnErr.IGNORE).list().entrySet())
         {
             Descriptor desc = sstableFiles.getKey();
+            File directory = desc.directory;
             Set<Component> components = sstableFiles.getValue();
 
-            for (File tmpFile : desc.getTemporaryFiles())
-                tmpFile.delete();
+            if (!cleanedDirectories.contains(directory))
+            {
+                cleanedDirectories.add(directory);
+                for (File tmpFile : desc.getTemporaryFiles())
+                    tmpFile.delete();
+            }
 
             File dataFile = new File(desc.filenameFor(Component.DATA));
             if (components.contains(Component.DATA) && dataFile.length() > 0)
@@ -1329,15 +1352,24 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
     {
         long start = System.nanoTime();
-        Memtable mt = data.getMemtableFor(opGroup, commitLogPosition);
-        long timeDelta = mt.put(update, indexer, opGroup);
-        DecoratedKey key = update.partitionKey();
-        invalidateCachedPartition(key);
-        metric.samplers.get(Sampler.WRITES).addSample(key.getKey(), key.hashCode(), 1);
-        StorageHook.instance.reportWrite(metadata.cfId, update);
-        metric.writeLatency.addNano(System.nanoTime() - start);
-        if(timeDelta < Long.MAX_VALUE)
-            metric.colUpdateTimeDeltaHistogram.update(timeDelta);
+        try
+        {
+            Memtable mt = data.getMemtableFor(opGroup, commitLogPosition);
+            long timeDelta = mt.put(update, indexer, opGroup);
+            DecoratedKey key = update.partitionKey();
+            invalidateCachedPartition(key);
+            metric.samplers.get(Sampler.WRITES).addSample(key.getKey(), key.hashCode(), 1);
+            StorageHook.instance.reportWrite(metadata.cfId, update);
+            metric.writeLatency.addNano(System.nanoTime() - start);
+            if(timeDelta < Long.MAX_VALUE)
+                metric.colUpdateTimeDeltaHistogram.update(timeDelta);
+        }
+        catch (RuntimeException e)
+        {
+            throw new RuntimeException(e.getMessage()
+                                       + " for ks: "
+                                       + keyspace.getName() + ", table: " + name, e);
+        }
     }
 
     /**
@@ -1560,6 +1592,11 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         return CompactionManager.instance.relocateSSTables(this, jobs);
     }
 
+    public CompactionManager.AllSSTableOpStatus garbageCollect(TombstoneOption tombstoneOption, int jobs) throws ExecutionException, InterruptedException
+    {
+        return CompactionManager.instance.performGarbageCollection(this, tombstoneOption, jobs);
+    }
+
     public void markObsolete(Collection<SSTableReader> sstables, OperationType compactionType)
     {
         assert !sstables.isEmpty();
@@ -1718,6 +1755,16 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                 samplerResults.cardinality, result});
     }
 
+    public boolean isCompactionDiskSpaceCheckEnabled()
+    {
+        return compactionSpaceCheck;
+    }
+
+    public void compactionDiskSpaceCheck(boolean enable)
+    {
+        compactionSpaceCheck = enable;
+    }
+
     public void cleanupCache()
     {
         Collection<Range<Token>> ranges = StorageService.instance.getLocalRanges(keyspace.getName());
@@ -1777,6 +1824,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                 }
 
                 writeSnapshotManifest(filesJSONArr, snapshotName);
+                writeSnapshotSchema(snapshotName);
             }
         }
         if (ephemeral)
@@ -1803,6 +1851,27 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         catch (IOException e)
         {
             throw new FSWriteError(e, manifestFile);
+        }
+    }
+
+    private void writeSnapshotSchema(final String snapshotName)
+    {
+        final File schemaFile = getDirectories().getSnapshotSchemaFile(snapshotName);
+
+        try
+        {
+            if (!schemaFile.getParentFile().exists())
+                schemaFile.getParentFile().mkdirs();
+
+            try (PrintStream out = new PrintStream(schemaFile))
+            {
+                for (String s: ColumnFamilyStoreCQLHelper.dumpReCreateStatements(metadata))
+                    out.println(s);
+            }
+        }
+        catch (IOException e)
+        {
+            throw new FSWriteError(e, schemaFile);
         }
     }
 
@@ -2158,7 +2227,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                 data.notifyTruncated(truncatedAt);
 
                 if (DatabaseDescriptor.isAutoSnapshot())
-                    snapshot(Keyspace.getTimestampedSnapshotName(name));
+                    snapshot(Keyspace.getTimestampedSnapshotNameWithPrefix(name, SNAPSHOT_TRUNCATE_PREFIX));
 
                 discardSSTables(truncatedAt);
 
