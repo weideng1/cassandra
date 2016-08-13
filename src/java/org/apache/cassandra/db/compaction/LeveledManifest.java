@@ -70,10 +70,10 @@ public class LeveledManifest
     private final SizeTieredCompactionStrategyOptions options;
     private final int [] compactionCounter;
 
-    LeveledManifest(ColumnFamilyStore cfs, int maxSSTableSizeInMB, SizeTieredCompactionStrategyOptions options)
+    LeveledManifest(ColumnFamilyStore cfs, long maxSSTableSizeInKB, SizeTieredCompactionStrategyOptions options)
     {
         this.cfs = cfs;
-        this.maxSSTableSizeInBytes = maxSSTableSizeInMB * 1024L * 1024L;
+        this.maxSSTableSizeInBytes = maxSSTableSizeInKB * 1024L;
         this.options = options;
 
         generations = new List[MAX_LEVEL_COUNT];
@@ -86,12 +86,12 @@ public class LeveledManifest
         compactionCounter = new int[MAX_LEVEL_COUNT];
     }
 
-    public static LeveledManifest create(ColumnFamilyStore cfs, int maxSSTableSize, List<SSTableReader> sstables)
+    public static LeveledManifest create(ColumnFamilyStore cfs, long maxSSTableSize, List<SSTableReader> sstables)
     {
         return create(cfs, maxSSTableSize, sstables, new SizeTieredCompactionStrategyOptions());
     }
 
-    public static LeveledManifest create(ColumnFamilyStore cfs, int maxSSTableSize, Iterable<SSTableReader> sstables, SizeTieredCompactionStrategyOptions options)
+    public static LeveledManifest create(ColumnFamilyStore cfs, long maxSSTableSize, Iterable<SSTableReader> sstables, SizeTieredCompactionStrategyOptions options)
     {
         LeveledManifest manifest = new LeveledManifest(cfs, maxSSTableSize, options);
 
@@ -591,11 +591,11 @@ public class LeveledManifest
             // L0 is the dumping ground for new sstables which thus may overlap each other.
             //
             // We treat L0 compactions specially:
-            // 1a. add sstables to the candidate set until we have at least maxSSTableSizeInMB
+            // 1a. add sstables to the candidate set until we have at least maxSSTableSizeInKB
             // 1b. prefer choosing older sstables as candidates, to newer ones
             // 1c. any L0 sstables that overlap a candidate, will also become candidates
             // 2. At most MAX_COMPACTING_L0 sstables from L0 will be compacted at once
-            // 3. If total candidate size is less than maxSSTableSizeInMB, we won't bother compacting with L1,
+            // 3. If total candidate size is less than maxSSTableSizeInKB, we won't bother compacting with L1,
             //    and the result of the compaction will stay in L0 instead of being promoted (see promote())
             //
             // Note that we ignore suspect-ness of L1 sstables here, since if an L1 sstable is suspect we're

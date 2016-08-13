@@ -44,16 +44,16 @@ import org.codehaus.jackson.node.ObjectNode;
 public class LeveledCompactionStrategy extends AbstractCompactionStrategy
 {
     private static final Logger logger = LoggerFactory.getLogger(LeveledCompactionStrategy.class);
-    private static final String SSTABLE_SIZE_OPTION = "sstable_size_in_mb";
+    private static final String SSTABLE_SIZE_OPTION = "sstable_size_in_kb";
 
     @VisibleForTesting
     final LeveledManifest manifest;
-    private final int maxSSTableSizeInMB;
+    private final long maxSSTableSizeInKB;
 
     public LeveledCompactionStrategy(ColumnFamilyStore cfs, Map<String, String> options)
     {
         super(cfs, options);
-        int configuredMaxSSTableSize = 160;
+        long configuredMaxSSTableSize = 160 * 1024L;
         SizeTieredCompactionStrategyOptions localOptions = new SizeTieredCompactionStrategyOptions(options);
         if (options != null)
         {             
@@ -62,18 +62,18 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy
                 configuredMaxSSTableSize = Integer.parseInt(options.get(SSTABLE_SIZE_OPTION));                 
                 if (!Boolean.getBoolean("cassandra.tolerate_sstable_size"))                 
                 {                     
-                    if (configuredMaxSSTableSize >= 1000)
-                        logger.warn("Max sstable size of {}MB is configured for {}.{}; having a unit of compaction this large is probably a bad idea",
+                    if (configuredMaxSSTableSize >= 1000 * 1024L)
+                        logger.warn("Max sstable size of {}KB is configured for {}.{}; having a unit of compaction this large is probably a bad idea",
                                 configuredMaxSSTableSize, cfs.name, cfs.getColumnFamilyName());
-                    if (configuredMaxSSTableSize < 50)  
-                        logger.warn("Max sstable size of {}MB is configured for {}.{}.  Testing done for CASSANDRA-5727 indicates that performance improves up to 160MB",
+                    if (configuredMaxSSTableSize < 50 * 1024L)  
+                        logger.warn("Max sstable size of {}KB is configured for {}.{}.  Testing done for CASSANDRA-5727 indicates that performance improves up to 160MB",
                                 configuredMaxSSTableSize, cfs.name, cfs.getColumnFamilyName());
                 }
             }
         }
-        maxSSTableSizeInMB = configuredMaxSSTableSize;
+        maxSSTableSizeInKB = configuredMaxSSTableSize;
 
-        manifest = new LeveledManifest(cfs, this.maxSSTableSizeInMB, localOptions);
+        manifest = new LeveledManifest(cfs, this.maxSSTableSizeInKB, localOptions);
         logger.trace("Created {}", manifest);
     }
 
@@ -230,7 +230,7 @@ public class LeveledCompactionStrategy extends AbstractCompactionStrategy
 
     public long getMaxSSTableBytes()
     {
-        return maxSSTableSizeInMB * 1024L * 1024L;
+        return maxSSTableSizeInKB * 1024L;
     }
 
     public ScannerList getScanners(Collection<SSTableReader> sstables, Collection<Range<Token>> ranges)
