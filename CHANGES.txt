@@ -1,4 +1,11 @@
 3.10
+ * Make decommission operation resumable (CASSANDRA-12008)
+ * Add support to one-way targeted repair (CASSANDRA-9876)
+ * Remove clientutil jar (CASSANDRA-11635)
+ * Fix compaction throughput throttle (CASSANDRA-12366)
+ * Delay releasing Memtable memory on flush until PostFlush has finished running (CASSANDRA-12358)
+ * Cassandra stress should dump all setting on startup (CASSANDRA-11914)
+ * Make it possible to compact a given token range (CASSANDRA-10643)
  * Allow updating DynamicEndpointSnitch properties via JMX (CASSANDRA-12179)
  * Collect metrics on queries by consistency level (CASSANDRA-7384)
  * Add support for GROUP BY to SELECT statement (CASSANDRA-10707)
@@ -31,11 +38,19 @@
 
 
 3.9
+ * Fix value skipping with counter columns (CASSANDRA-11726)
+ * Restore resumable hints delivery (CASSANDRA-11960)
+ * Fix nodetool tablestats miss SSTable count (CASSANDRA-12205)
  * Fixed flacky SSTablesIteratedTest (CASSANDRA-12282)
  * Fixed flacky SSTableRewriterTest: check file counts before calling validateCFS (CASSANDRA-12348)
  * cqlsh: Fix handling of $$-escaped strings (CASSANDRA-12189)
  * Fix SSL JMX requiring truststore containing server cert (CASSANDRA-12109)
 Merged from 3.0:
+ * Fix clean interval not sent to commit log for empty memtable flush (CASSANDRA-12436)
+ * Fix potential resource leak in RMIServerSocketFactoryImpl (CASSANDRA-12331)
+ * Make sure compaction stats are updated when compaction is interrupted (CASSANDRA-12100)
+ * Change commitlog and sstables to track dirty and clean intervals (CASSANDRA-11828)
+ * NullPointerException during compaction on table with static columns (CASSANDRA-12336)
  * Fixed ConcurrentModificationException when reading metrics in GraphiteReporter (CASSANDRA-11823)
  * Fix upgrade of super columns on thrift (CASSANDRA-12335)
  * Fixed flacky BlacklistingCompactionsTest, switched to fixed size types and increased corruption size (CASSANDRA-12359)
@@ -51,6 +66,8 @@ Merged from 3.0:
  * NullPointerExpception when reading/compacting table (CASSANDRA-11988)
  * Fix problem with undeleteable rows on upgrade to new sstable format (CASSANDRA-12144)
 Merged from 2.2:
+ * Fix hanging stream session (CASSANDRA-10992)
+ * Fix INSERT JSON, fromJson() support of smallint, tinyint types (CASSANDRA-12371)
  * Release sstables of failed stream sessions only when outgoing transfers are finished (CASSANDRA-11345)
  * Wait for tracing events before returning response and query at same consistency level client side (CASSANDRA-11465)
  * cqlsh copyutil should get host metadata by connected address (CASSANDRA-11979)
@@ -90,6 +107,8 @@ Merged from 2.1:
  * Add repaired percentage metric (CASSANDRA-11503)
  * Add Change-Data-Capture (CASSANDRA-8844)
 Merged from 3.0:
+ * Fix potential bad messaging service message for paged range reads
+   within mixed-version 3.x clusters (CASSANDRA-12249)
  * Fix paging logic for deleted partitions with static columns (CASSANDRA-12107)
  * Wait until the message is being send to decide which serializer must be used (CASSANDRA-11393)
  * Fix migration of static thrift column names with non-text comparators (CASSANDRA-12147)
@@ -103,6 +122,30 @@ Merged from 3.0:
    those static columns in query results (CASSANDRA-12123)
  * Avoid digest mismatch with empty but static rows (CASSANDRA-12090)
  * Fix EOF exception when altering column type (CASSANDRA-11820)
+Merged from 2.2:
+ * Only set broadcast_rpc_address on Ec2MultiRegionSnitch if it's not set (CASSANDRA-11357)
+ * Update StorageProxy range metrics for timeouts, failures and unavailables (CASSANDRA-9507)
+ * Add decay to histograms and timers used for metrics (CASSANDRA-11752)
+ * Fix hanging stream session (CASSANDRA-10992)
+ * Fix INSERT JSON, fromJson() support of smallint, tinyint types (CASSANDRA-12371)
+ * Restore JVM metric export for metric reporters (CASSANDRA-12312)
+ * Release sstables of failed stream sessions only when outgoing transfers are finished (CASSANDRA-11345)
+ * Wait for tracing events before returning response and query at same consistency level client side (CASSANDRA-11465)
+ * cqlsh copyutil should get host metadata by connected address (CASSANDRA-11979)
+ * Fixed cqlshlib.test.remove_test_db (CASSANDRA-12214)
+ * Synchronize ThriftServer::stop() (CASSANDRA-12105)
+ * Use dedicated thread for JMX notifications (CASSANDRA-12146)
+ * Improve streaming synchronization and fault tolerance (CASSANDRA-11414)
+ * MemoryUtil.getShort() should return an unsigned short also for architectures not supporting unaligned memory accesses (CASSANDRA-11973)
+Merged from 2.1:
+ * Disable passing control to post-flush after flush failure to prevent data loss (CASSANDRA-11828)
+ * Allow STCS-in-L0 compactions to reduce scope with LCS (CASSANDRA-12040)
+ * cannot use cql since upgrading python to 2.7.11+ (CASSANDRA-11850)
+ * Fix filtering on clustering columns when 2i is used (CASSANDRA-11907)
+
+
+3.0.8
+ * Fix potential race in schema during new table creation (CASSANDRA-12083)
  * cqlsh: fix error handling in rare COPY FROM failure scenario (CASSANDRA-12070)
  * Disable autocompaction during drain (CASSANDRA-11878)
  * Add a metrics timer to MemtablePool and use it to track time spent blocked on memory in MemtableAllocator (CASSANDRA-11327)

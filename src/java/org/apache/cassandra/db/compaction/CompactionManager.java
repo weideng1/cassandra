@@ -30,6 +30,7 @@ import javax.management.openmbean.TabularData;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.*;
+import com.google.common.primitives.Ints;
 import com.google.common.util.concurrent.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,6 +45,7 @@ import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.compaction.CompactionInfo.Holder;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
+import org.apache.cassandra.db.lifecycle.SSTableIntervalTree;
 import org.apache.cassandra.db.lifecycle.SSTableSet;
 import org.apache.cassandra.db.lifecycle.View;
 import org.apache.cassandra.db.rows.UnfilteredRowIterator;
@@ -482,7 +484,7 @@ public class CompactionManager implements CompactionManagerMBean
                     @Override
                     protected CompactionController getCompactionController(Set<SSTableReader> toCompact)
                     {
-                        return new CompactionController(cfStore, toCompact, gcBefore, getRateLimiter(), tombstoneOption);
+                        return new CompactionController(cfStore, toCompact, gcBefore, null, tombstoneOption);
                     }
                 };
                 task.setUserDefined(true);
@@ -703,11 +705,13 @@ public class CompactionManager implements CompactionManagerMBean
             return Collections.emptyList();
 
         List<Future<?>> futures = new ArrayList<>();
+
         int nonEmptyTasks = 0;
         for (final AbstractCompactionTask task : tasks)
         {
             if (task.transaction.originals().size() > 0)
                 nonEmptyTasks++;
+
             Runnable runnable = new WrappedRunnable()
             {
                 protected void runMayThrow()
@@ -724,7 +728,57 @@ public class CompactionManager implements CompactionManagerMBean
         }
         if (nonEmptyTasks > 1)
             logger.info("Major compaction will not result in a single sstable - repaired and unrepaired data is kept separate and compaction runs per data_file_directory.");
+
+
         return futures;
+    }
+
+    public void forceCompactionForTokenRange(ColumnFamilyStore cfStore, Collection<Range<Token>> ranges)
+    {
+        final Collection<AbstractCompactionTask> tasks = cfStore.runWithCompactionsDisabled(() ->
+                   {
+                       Collection<SSTableReader> sstables = sstablesInBounds(cfStore, ranges);
+                       if (sstables == null || sstables.isEmpty())
+                       {
+                           logger.debug("No sstables found for the provided token range");
+                           return null;
+                       }
+                       return cfStore.getCompactionStrategyManager().getUserDefinedTasks(sstables, getDefaultGcBefore(cfStore, FBUtilities.nowInSeconds()));
+                   }, false, false);
+
+        if (tasks == null)
+            return;
+
+        Runnable runnable = new WrappedRunnable()
+        {
+            protected void runMayThrow()
+            {
+                for (AbstractCompactionTask task : tasks)
+                    if (task != null)
+                        task.execute(metrics);
+            }
+        };
+
+        if (executor.isShutdown())
+        {
+            logger.info("Compaction executor has shut down, not submitting task");
+            return;
+        }
+        FBUtilities.waitOnFuture(executor.submit(runnable));
+    }
+
+    private static Collection<SSTableReader> sstablesInBounds(ColumnFamilyStore cfs, Collection<Range<Token>> tokenRangeCollection)
+    {
+        final Set<SSTableReader> sstables = new HashSet<>();
+        Iterable<SSTableReader> liveTables = cfs.getTracker().getView().select(SSTableSet.LIVE);
+        SSTableIntervalTree tree = SSTableIntervalTree.build(liveTables);
+
+        for (Range<Token> tokenRange : tokenRangeCollection)
+        {
+            Iterable<SSTableReader> ssTableReaders = View.sstablesInBounds(tokenRange.left.minKeyBound(), tokenRange.right.maxKeyBound(), tree);
+            Iterables.addAll(sstables, ssTableReaders);
+        }
+        return sstables;
     }
 
     public void forceUserDefinedCompaction(String dataFiles)
@@ -1026,15 +1080,22 @@ public class CompactionManager implements CompactionManagerMBean
         logger.info("Cleaning up {}", sstable);
 
         File compactionFileLocation = sstable.descriptor.directory;
+        RateLimiter limiter = getRateLimiter();
+        double compressionRatio = sstable.getCompressionRatio();
+        if (compressionRatio == MetadataCollector.NO_COMPRESSION_RATIO)
+            compressionRatio = 1.0;
 
         List<SSTableReader> finished;
+
         int nowInSec = FBUtilities.nowInSeconds();
         try (SSTableRewriter writer = SSTableRewriter.construct(cfs, txn, false, sstable.maxDataAge);
-             ISSTableScanner scanner = cleanupStrategy.getScanner(sstable, getRateLimiter());
+             ISSTableScanner scanner = cleanupStrategy.getScanner(sstable, null);
              CompactionController controller = new CompactionController(cfs, txn.originals(), getDefaultGcBefore(cfs, nowInSec));
              CompactionIterator ci = new CompactionIterator(OperationType.CLEANUP, Collections.singletonList(scanner), controller, nowInSec, UUIDGen.getTimeUUID(), metrics))
         {
             writer.switchWriter(createWriter(cfs, compactionFileLocation, expectedBloomFilterSize, sstable.getSSTableMetadata().repairedAt, sstable, txn));
+            long lastBytesScanned = 0;
+
 
             while (ci.hasNext())
             {
@@ -1049,6 +1110,13 @@ public class CompactionManager implements CompactionManagerMBean
 
                     if (writer.append(notCleaned) != null)
                         totalkeysWritten++;
+
+                    long bytesScanned = scanner.getBytesScanned();
+
+                    int lengthRead = (int) (Ints.checkedCast(bytesScanned - lastBytesScanned) * compressionRatio);
+                    limiter.acquire(lengthRead + 1);
+
+                    lastBytesScanned = bytesScanned;
                 }
             }
 

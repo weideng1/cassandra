@@ -206,9 +206,6 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         }
     }
 
-    @VisibleForTesting
-    public static volatile ColumnFamilyStore discardFlushResults;
-
     public final Keyspace keyspace;
     public final String name;
     public final CFMetaData metadata;
@@ -869,9 +866,8 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             logFlush();
             Flush flush = new Flush(false);
             flushExecutor.execute(flush);
-            ListenableFutureTask<CommitLogPosition> task = ListenableFutureTask.create(flush.postFlush);
-            postFlushExecutor.submit(task);
-            return task;
+            postFlushExecutor.execute(flush.postFlushTask);
+            return flush.postFlushTask;
         }
     }
 
@@ -972,29 +968,20 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         final boolean flushSecondaryIndexes;
         final OpOrder.Barrier writeBarrier;
         final CountDownLatch latch = new CountDownLatch(1);
-        final CommitLogPosition commitLogUpperBound;
         volatile Throwable flushFailure = null;
         final List<Memtable> memtables;
-        final List<Collection<SSTableReader>> readers;
 
         private PostFlush(boolean flushSecondaryIndexes,
                           OpOrder.Barrier writeBarrier,
-                          CommitLogPosition commitLogUpperBound,
-                          List<Memtable> memtables,
-                          List<Collection<SSTableReader>> readers)
+                          List<Memtable> memtables)
         {
             this.writeBarrier = writeBarrier;
             this.flushSecondaryIndexes = flushSecondaryIndexes;
-            this.commitLogUpperBound = commitLogUpperBound;
             this.memtables = memtables;
-            this.readers = readers;
         }
 
         public CommitLogPosition call()
         {
-            if (discardFlushResults == ColumnFamilyStore.this)
-                return commitLogUpperBound;
-
             writeBarrier.await();
 
             /**
@@ -1018,19 +1005,13 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                 throw new IllegalStateException();
             }
 
-            // Must check commitLogUpperBound != null because Flush may find that all memtables are clean
-            // and so not set a commitLogUpperBound
+            CommitLogPosition commitLogUpperBound = CommitLogPosition.NONE;
             // If a flush errored out but the error was ignored, make sure we don't discard the commit log.
-            if (flushFailure == null)
+            if (flushFailure == null && !memtables.isEmpty())
             {
-                CommitLog.instance.discardCompletedSegments(metadata.cfId, commitLogUpperBound);
-                for (int i = 0 ; i < memtables.size() ; i++)
-                {
-                    Memtable memtable = memtables.get(i);
-                    Collection<SSTableReader> reader = readers.get(i);
-                    memtable.cfs.data.permitCompactionOfFlushed(reader);
-                    memtable.cfs.compactionStrategyManager.replaceFlushed(memtable, reader);
-                }
+                Memtable memtable = memtables.get(0);
+                commitLogUpperBound = memtable.getCommitLogUpperBound();
+                CommitLog.instance.discardCompletedSegments(metadata.cfId, memtable.getCommitLogLowerBound(), commitLogUpperBound);
             }
 
             metric.pendingFlushes.dec();
@@ -1054,7 +1035,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     {
         final OpOrder.Barrier writeBarrier;
         final List<Memtable> memtables = new ArrayList<>();
-        final List<Collection<SSTableReader>> readers = new ArrayList<>();
+        final ListenableFutureTask<CommitLogPosition> postFlushTask;
         final PostFlush postFlush;
         final boolean truncate;
 
@@ -1096,7 +1077,8 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             // since this happens after wiring up the commitLogUpperBound, we also know all operations with earlier
             // commit log segment position have also completed, i.e. the memtables are done and ready to flush
             writeBarrier.issue();
-            postFlush = new PostFlush(!truncate, writeBarrier, commitLogUpperBound.get(), memtables, readers);
+            postFlush = new PostFlush(!truncate, writeBarrier, memtables);
+            postFlushTask = ListenableFutureTask.create(postFlush);
         }
 
         public void run()
@@ -1106,29 +1088,16 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             writeBarrier.markBlocking();
             writeBarrier.await();
 
-            // mark all memtables as flushing, removing them from the live memtable list, and
-            // remove any memtables that are already clean from the set we need to flush
-            Iterator<Memtable> iter = memtables.iterator();
-            while (iter.hasNext())
-            {
-                Memtable memtable = iter.next();
+            // mark all memtables as flushing, removing them from the live memtable list
+            for (Memtable memtable : memtables)
                 memtable.cfs.data.markFlushing(memtable);
-                if (memtable.isClean() || truncate)
-                {
-                    memtable.cfs.data.replaceFlushed(memtable, Collections.emptyList());
-                    reclaim(memtable);
-                    iter.remove();
-                }
-            }
 
             metric.memtableSwitchCount.inc();
 
             try
             {
                 for (Memtable memtable : memtables)
-                {
-                    this.readers.add(flushMemtable(memtable));
-                }
+                    flushMemtable(memtable);
             }
             catch (Throwable t)
             {
@@ -1141,6 +1110,13 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
         public Collection<SSTableReader> flushMemtable(Memtable memtable)
         {
+            if (memtable.isClean() || truncate)
+            {
+                memtable.cfs.replaceFlushed(memtable, Collections.emptyList());
+                reclaim(memtable);
+                return Collections.emptyList();
+            }
+
             List<Future<SSTableMultiWriter>> futures = new ArrayList<>();
             long totalBytesOnDisk = 0;
             long maxBytesOnDisk = 0;
@@ -1218,7 +1194,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                     }
                 }
             }
-            memtable.cfs.data.replaceFlushed(memtable, sstables);
+            memtable.cfs.replaceFlushed(memtable, sstables);
             reclaim(memtable);
             memtable.cfs.compactionStrategyManager.compactionLogger.flush(sstables);
             logger.debug("Flushed to {} ({} sstables, {}), biggest {}, smallest {}",
@@ -1235,14 +1211,14 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             // issue a read barrier for reclaiming the memory, and offload the wait to another thread
             final OpOrder.Barrier readBarrier = readOrdering.newBarrier();
             readBarrier.issue();
-            reclaimExecutor.execute(new WrappedRunnable()
+            postFlushTask.addListener(new WrappedRunnable()
             {
                 public void runMayThrow()
                 {
                     readBarrier.await();
                     memtable.setDiscarded();
                 }
-            });
+            }, reclaimExecutor);
         }
     }
 
@@ -1261,21 +1237,6 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                 && commitLogUpperBound.compareAndSet(currentLast, lastReplayPosition))
                 break;
         }
-    }
-
-    @VisibleForTesting
-    // this method should ONLY be used for testing commit log behaviour; it discards the current memtable
-    // contents without marking the commit log clean, and prevents any proceeding flushes from marking
-    // the commit log as done, however they *will* terminate (unlike under typical failures) to ensure progress is made
-    public void simulateFailedFlush()
-    {
-        discardFlushResults = this;
-        data.markFlushing(data.switchMemtable(false, new Memtable(new AtomicReference<>(CommitLog.instance.getCurrentPosition()), this)));
-    }
-
-    public void resumeFlushing()
-    {
-        discardFlushResults = null;
     }
 
     /**
@@ -1619,16 +1580,6 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     public Tracker getTracker()
     {
         return data;
-    }
-
-    public Collection<SSTableReader> getSSTables()
-    {
-        return data.getSSTables();
-    }
-
-    public Iterable<SSTableReader> getPermittedToCompactSSTables()
-    {
-        return data.getPermittedToCompact();
     }
 
     public Set<SSTableReader> getLiveSSTables()
@@ -2109,10 +2060,14 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         forceMajorCompaction(false);
     }
 
-
     public void forceMajorCompaction(boolean splitOutput) throws InterruptedException, ExecutionException
     {
         CompactionManager.instance.performMaximal(this, splitOutput);
+    }
+
+    public void forceCompactionForTokenRange(Collection<Range<Token>> tokenRanges) throws ExecutionException, InterruptedException
+    {
+        CompactionManager.instance.forceCompactionForTokenRange(this, tokenRanges);
     }
 
     public static Iterable<ColumnFamilyStore> all()
@@ -2215,7 +2170,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         long now = System.currentTimeMillis();
         // make sure none of our sstables are somehow in the future (clock drift, perhaps)
         for (ColumnFamilyStore cfs : concatWithIndexes())
-            for (SSTableReader sstable : cfs.data.getSSTables())
+            for (SSTableReader sstable : cfs.getLiveSSTables())
                 now = Math.max(now, sstable.maxDataAge);
         truncatedAt = now;
 
@@ -2253,7 +2208,8 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         {
             final Flush flush = new Flush(true);
             flushExecutor.execute(flush);
-            return postFlushExecutor.submit(flush.postFlush);
+            postFlushExecutor.execute(flush.postFlushTask);
+            return flush.postFlushTask;
         }
     }
 
@@ -2313,7 +2269,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             public LifecycleTransaction call()
             {
                 assert data.getCompacting().isEmpty() : data.getCompacting();
-                Iterable<SSTableReader> sstables = getPermittedToCompactSSTables();
+                Iterable<SSTableReader> sstables = getLiveSSTables();
                 sstables = AbstractCompactionStrategy.filterSuspectSSTables(sstables);
                 sstables = ImmutableList.copyOf(sstables);
                 LifecycleTransaction modifier = data.tryModify(sstables, operationType);
